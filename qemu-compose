@@ -27,6 +27,7 @@ def build_qemu_command(name, conf):
     cpus = conf.get("cpus", 2)
     cpu_model = conf.get("cpu_model", "max")  # safe default
     memory = conf.get("memory", 2048)
+    cpu_max_speed = conf.get("cpu_max_speed", 100)  # percentage (1-100)
 
     # Detect KVM
     if arch == "x86_64" and kvm_available():
@@ -46,26 +47,124 @@ def build_qemu_command(name, conf):
     ]
 
     # ------------------------
+    # CPU SPEED LIMITING
+    # ------------------------
+    if cpu_max_speed < 100:
+        # Calculate icount shift based on percentage
+        # Lower percentage = higher shift = slower execution
+        # shift=auto with sleep provides throttling
+        shift = max(0, int(7 - (cpu_max_speed / 100.0) * 7))
+        cmd += ["-icount", f"shift={shift},sleep=on"]
+        print(f"CPU throttled to {cpu_max_speed}% (icount shift={shift})")
+
+    # ------------------------
     # NETWORKS
     # ------------------------
     net_id = 0
     if "networks" in conf:
         for net in conf["networks"]:
-            if net["type"] == "user":
-                net_id += 1
+            net_id += 1
+            net_type = net.get("type", "user")
+            mac = net.get("mac", f"52:54:00:{net_id:02x}:{net_id:02x}:{net_id:02x}")
+            
+            # Build netdev based on type
+            if net_type == "user":
+                # User mode networking (NAT with port forwarding)
                 forwards = net.get("forwards", [])
                 fwd_str = ",".join(
                     [f"hostfwd=tcp::{f['host_port']}-:{f['guest_port']}" for f in forwards]
                 )
-
+                
                 netdev = f"user,id=net{net_id}"
                 if fwd_str:
                     netdev += f",{fwd_str}"
-
+                
+                # Apply network conditions for user mode
+                conditions = net.get("conditions", {})
+                if "latency" in conditions:
+                    # Note: QEMU user mode has limited condition support
+                    print(f"⚠️  Network conditions on user mode are limited")
+                
                 cmd += [
                     "-netdev", netdev,
-                    "-device", f"virtio-net-pci,netdev=net{net_id}"
+                    "-device", f"virtio-net-pci,netdev=net{net_id},mac={mac}"
                 ]
+            
+            elif net_type == "tap":
+                # TAP networking (requires bridge setup on host)
+                ifname = net.get("ifname", f"tap{net_id}")
+                bridge = net.get("bridge", None)
+                script = net.get("script", "no")
+                downscript = net.get("downscript", "no")
+                
+                netdev = f"tap,id=net{net_id},ifname={ifname},script={script},downscript={downscript}"
+                if bridge:
+                    netdev += f",br={bridge}"
+                
+                cmd += [
+                    "-netdev", netdev,
+                    "-device", f"virtio-net-pci,netdev=net{net_id},mac={mac}"
+                ]
+                print(f"TAP network: {ifname}" + (f" on bridge {bridge}" if bridge else ""))
+            
+            elif net_type == "socket":
+                # Socket networking for VM-to-VM communication
+                mode = net.get("mode", "server")  # server or client
+                path = net.get("path", f"/tmp/qemu-net{net_id}.sock")
+                
+                if mode == "server":
+                    netdev = f"socket,id=net{net_id},listen={path}"
+                    print(f"Socket server: {path}")
+                else:  # client
+                    netdev = f"socket,id=net{net_id},connect={path}"
+                    print(f"Socket client: {path}")
+                
+                cmd += [
+                    "-netdev", netdev,
+                    "-device", f"virtio-net-pci,netdev=net{net_id},mac={mac}"
+                ]
+            
+            elif net_type == "vlan":
+                # VLAN networking
+                vlan_id = net.get("vlan_id", 1)
+                parent = net.get("parent", "user")
+                
+                # Create parent network first, then tag with VLAN
+                netdev = f"{parent},id=net{net_id},vlan={vlan_id}"
+                
+                cmd += [
+                    "-netdev", netdev,
+                    "-device", f"virtio-net-pci,netdev=net{net_id},mac={mac}"
+                ]
+                print(f"VLAN {vlan_id} network")
+            
+            elif net_type == "multicast":
+                # Multicast socket networking
+                mcast_addr = net.get("address", "230.0.0.1:1234")
+                
+                netdev = f"socket,id=net{net_id},mcast={mcast_addr}"
+                
+                cmd += [
+                    "-netdev", netdev,
+                    "-device", f"virtio-net-pci,netdev=net{net_id},mac={mac}"
+                ]
+                print(f"Multicast network: {mcast_addr}")
+            
+            # Apply network conditions (if supported)
+            conditions = net.get("conditions", {})
+            if conditions and net_type in ["socket", "tap"]:
+                cond_parts = []
+                if "latency" in conditions:
+                    cond_parts.append(f"latency: {conditions['latency']}")
+                if "packet_loss" in conditions:
+                    cond_parts.append(f"loss: {conditions['packet_loss']}%")
+                if "bandwidth" in conditions:
+                    cond_parts.append(f"bandwidth: {conditions['bandwidth']}")
+                
+                if cond_parts:
+                    print(f"  Network conditions: {', '.join(cond_parts)}")
+                    print(f"  ⚠️  Note: Apply conditions on host using 'tc netem' for tap{net_id}")
+
 
     # ------------------------
     # DISKS

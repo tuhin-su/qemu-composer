@@ -66,7 +66,7 @@ if [ -f "qemu-compose" ]; then
 else
     echo "qemu-compose not found in current directory."
 fi
-cd ..
-rm -rf qemu-composer
+# cd ..
+# rm -rf qemu-composer
 echo "=== Installation Complete ==="
 echo "You can now run: ./qemu-compose up"

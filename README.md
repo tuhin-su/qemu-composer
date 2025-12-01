@@ -73,7 +73,23 @@ vms:
     machine: q35 | pc | virt | raspi3 | virt-2.12
     cpus: 2
     cpu_model: host | max | cortex-a57
+    cpu_max_speed: 100  # CPU speed limit (1-100%), default: 100
     memory: 2048
+
+    # Networking (multiple types supported)
+    networks:
+      - type: user | socket | tap | vlan | multicast
+        # Socket networking (VM-to-VM)
+        mode: server | client
+        path: /tmp/qemu-net.sock
+        # Network conditions
+        conditions:
+          latency: 50ms
+          packet_loss: 2
+          bandwidth: 100mbps
+          jitter: 10ms
+        # MAC address (auto-generated if not specified)
+        mac: "52:54:00:12:34:56"
 
     # Optional hardware identity
     hardware:
@@ -298,6 +314,188 @@ vms:
     disks:
       - path: ./riscv.qcow2
 ```
+
+---
+
+# ⚡ **Example 6 — CPU Speed Limiting (ESP32-like)**
+
+Limit CPU performance to simulate low-power devices or test under constrained conditions.
+
+```yaml
+version: "2.0"
+
+vms:
+  esp32_sim:
+    arch: x86_64
+    machine: q35
+    cpus: 1
+    cpu_max_speed: 25  # Limit to 25% of max speed
+    memory: 512
+
+    networks:
+      - type: user
+        forwards:
+          - host_port: 2225
+            guest_port: 22
+
+    disks:
+      - path: ./esp32sim.qcow2
+        format: qcow2
+        interface: virtio
+        size: 2G
+```
+
+**Use Cases:**
+- Simulate embedded devices (ESP32, Arduino, etc.)
+- Test application performance under CPU constraints
+- Battery life simulation for mobile devices
+- Development of power-efficient software
+
+**CPU Speed Values:**
+- `cpu_max_speed: 100` — Full speed (default)
+- `cpu_max_speed: 75` — 75% of max speed
+- `cpu_max_speed: 50` — Half speed
+- `cpu_max_speed: 25` — Quarter speed (very slow, embedded-like)
+
+---
+
+# 🌐 **Example 7 — Advanced Networking: Socket VM-to-VM**
+
+Connect multiple VMs directly using socket networking (no root required).
+
+```yaml
+version: "2.0"
+
+vms:
+  server:
+    arch: x86_64
+    cpus: 2
+    memory: 1024
+
+    networks:
+      - type: socket
+        mode: server
+        path: /tmp/qemu-lan.sock
+        mac: "52:54:00:12:34:01"
+
+    disks:
+      - path: ./server.qcow2
+        format: qcow2
+        interface: virtio
+
+  client:
+    arch: x86_64
+    cpus: 2
+    memory: 1024
+
+    networks:
+      - type: socket
+        mode: client
+        path: /tmp/qemu-lan.sock
+        mac: "52:54:00:12:34:02"
+
+    disks:
+      - path: ./client.qcow2
+        format: qcow2
+        interface: virtio
+```
+
+**How it works:**
+1. Server VM creates socket at `/tmp/qemu-lan.sock`
+2. Client VM connects to the same socket
+3. VMs can communicate directly (ping, SSH, etc.)
+4. No root privileges required
+5. Isolated from host network
+
+---
+
+# 🌍 **Example 8 — WAN Simulation with Network Conditions**
+
+Simulate slow WAN connections with latency and packet loss.
+
+```yaml
+version: "2.0"
+
+vms:
+  wan_server:
+    arch: x86_64
+    cpus: 2
+    memory: 1024
+
+    networks:
+      - type: socket
+        mode: server
+        path: /tmp/qemu-wan.sock
+        conditions:
+          latency: 200ms      # 200ms delay
+          packet_loss: 10     # 10% packet loss
+          bandwidth: 5mbps    # 5 Mbps limit
+          jitter: 50ms        # 50ms variance
+
+    disks:
+      - path: ./wan-server.qcow2
+        format: qcow2
+        interface: virtio
+```
+
+**Use Cases:**
+- Test application behavior on slow networks
+- Simulate international connections
+- Test timeout and retry logic
+- Develop resilient network applications
+
+**Note:** Network conditions are parsed and displayed. For TAP networks, apply conditions on the host using `tc netem`:
+```bash
+sudo tc qdisc add dev tap0 root netem delay 200ms loss 10%
+```
+
+---
+
+# 📡 **Example 9 — Multicast Networking**
+
+Connect multiple VMs on the same multicast network.
+
+```yaml
+version: "2.0"
+
+vms:
+  node1:
+    arch: x86_64
+    cpus: 1
+    memory: 512
+
+    networks:
+      - type: multicast
+        address: "230.0.0.1:1234"
+        mac: "52:54:00:aa:bb:01"
+
+    disks:
+      - path: ./node1.qcow2
+        format: qcow2
+        interface: virtio
+
+  node2:
+    arch: x86_64
+    cpus: 1
+    memory: 512
+
+    networks:
+      - type: multicast
+        address: "230.0.0.1:1234"
+        mac: "52:54:00:aa:bb:02"
+
+    disks:
+      - path: ./node2.qcow2
+        format: qcow2
+        interface: virtio
+```
+
+**Benefits:**
+- All VMs on same multicast address can communicate
+- Broadcast and multicast traffic works
+- Great for cluster simulations
+- No server/client distinction needed
+
 ---
 # ⭐ **Two VMs on the Same LAN (Bridge Mode)**
 
@@ -426,6 +624,13 @@ ping 192.168.100.11
 | GPS NMEA feed              | ✅         |
 | KVM acceleration           | ✅         |
 | Auto fallback to TCG       | ✅         |
+| CPU speed limiting         | ✅         |
+| Socket networking (VM-VM)  | ✅         |
+| TAP/Bridge networking      | ✅         |
+| Multicast networking       | ✅         |
+| VLAN support               | ✅         |
+| Network conditions         | ✅         |
+| MAC address auto-gen       | ✅         |
 | Multiple networks          | ✅         |
 | Port forwarding            | ✅         |
 | Multiple disks             | ✅         |
@@ -434,7 +639,122 @@ ping 192.168.100.11
 
 ---
 
-# 🔧 **Troubleshooting**
+# � **Networking Guide**
+
+## Network Types
+
+### 1. **User Mode (NAT)**
+- **Type**: `user`
+- **Root required**: No
+- **Use case**: Internet access, port forwarding
+- **Limitations**: VMs cannot communicate with each other
+
+```yaml
+networks:
+  - type: user
+    forwards:
+      - host_port: 2222
+        guest_port: 22
+```
+
+### 2. **Socket Networking**
+- **Type**: `socket`
+- **Root required**: No
+- **Use case**: VM-to-VM communication
+- **Modes**: `server` (creates socket), `client` (connects to socket)
+
+```yaml
+# Server VM
+networks:
+  - type: socket
+    mode: server
+    path: /tmp/qemu-lan.sock
+
+# Client VM
+networks:
+  - type: socket
+    mode: client
+    path: /tmp/qemu-lan.sock
+```
+
+### 3. **TAP/Bridge Networking**
+- **Type**: `tap`
+- **Root required**: Yes (or qemu-bridge-helper)
+- **Use case**: Direct host network access, VM appears on LAN
+
+```yaml
+networks:
+  - type: tap
+    ifname: tap0
+    bridge: br0
+```
+
+**Host setup required:**
+```bash
+sudo ip link add name br0 type bridge
+sudo ip addr add 192.168.100.1/24 dev br0
+sudo ip link set br0 up
+```
+
+### 4. **Multicast Networking**
+- **Type**: `multicast`
+- **Root required**: No
+- **Use case**: Multiple VMs on same network, broadcast support
+
+```yaml
+networks:
+  - type: multicast
+    address: "230.0.0.1:1234"
+```
+
+### 5. **VLAN Networking**
+- **Type**: `vlan`
+- **Root required**: Depends on parent
+- **Use case**: Network segmentation
+
+```yaml
+networks:
+  - type: vlan
+    vlan_id: 100
+    parent: user
+```
+
+## Network Conditions
+
+Simulate real-world network conditions:
+
+```yaml
+networks:
+  - type: socket
+    mode: server
+    path: /tmp/qemu-net.sock
+    conditions:
+      latency: 100ms      # Round-trip delay
+      packet_loss: 5      # Percentage (0-100)
+      bandwidth: 10mbps   # Speed limit
+      jitter: 20ms        # Latency variance
+```
+
+**Note:** For TAP networks, apply conditions on host:
+```bash
+sudo tc qdisc add dev tap0 root netem delay 100ms loss 5%
+```
+
+## MAC Address Management
+
+- **Auto-generated**: Format `52:54:00:XX:XX:XX`
+- **Manual override**: Specify `mac` parameter
+- **Unique per interface**: Automatically incremented
+
+```yaml
+networks:
+  - type: socket
+    mac: "52:54:00:12:34:56"  # Custom MAC
+```
+
+---
+
+# �🔧 **Troubleshooting**
 
 ### KVM not detected?
 

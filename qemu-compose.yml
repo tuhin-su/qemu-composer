@@ -11,6 +11,7 @@ vms:
     accel: kvm
     cpus: 4
     cpu_model: host
+    cpu_max_speed: 75  # Limit CPU to 75% of max speed
     memory: 4096
 
     boot:
@@ -182,4 +183,154 @@ vms:
       - "-cpu host"
       - "-device vfio-pci,host=0000:01:00.0,multifunction=on"
       - "-device vfio-pci,host=0000:01:00.1"
+
+  ##############################################################
+  # 5. Low-Power Embedded Device (ESP32-like)
+  ##############################################################
+  esp32_sim:
+    arch: x86_64
+    machine: q35
+    cpus: 1
+    cpu_max_speed: 25  # Limit to 25% - simulates low-power MCU
+    memory: 512
+
+    networks:
+      - type: user
+        forwards:
+          - host_port: 2225
+            guest_port: 22
+
+    disks:
+      - path: disks/esp32sim.qcow2
+        format: qcow2
+        interface: virtio
+        size: 2G
+
+    hardware:
+      vendor: "Espressif"
+      product: "ESP32-Simulator"
+      serial_number: AUTO
+
+    args:
+      - "-nographic"
+
+  ##############################################################
+  # 6. Socket Networking - VM-to-VM Communication (Server)
+  ##############################################################
+  net_server:
+    arch: x86_64
+    machine: q35
+    cpus: 2
+    memory: 1024
+
+    networks:
+      - type: socket
+        mode: server
+        path: /tmp/qemu-lan.sock
+        mac: "52:54:00:12:34:01"
+
+    disks:
+      - path: disks/server.qcow2
+        format: qcow2
+        interface: virtio
+        size: 10G
+
+    hardware:
+      vendor: "QEMU"
+      product: "Network-Server"
+
+  ##############################################################
+  # 7. Socket Networking - VM-to-VM Communication (Client)
+  ##############################################################
+  net_client:
+    arch: x86_64
+    machine: q35
+    cpus: 2
+    memory: 1024
+
+    networks:
+      - type: socket
+        mode: client
+        path: /tmp/qemu-lan.sock
+        mac: "52:54:00:12:34:02"
+        conditions:
+          latency: 50ms
+          packet_loss: 2
+          bandwidth: 100mbps
+
+    disks:
+      - path: disks/client.qcow2
+        format: qcow2
+        interface: virtio
+        size: 10G
+
+    hardware:
+      vendor: "QEMU"
+      product: "Network-Client"
+
+  ##############################################################
+  # 8. Multicast Network - Multiple VMs on Same Network
+  ##############################################################
+  mcast_vm1:
+    arch: x86_64
+    machine: q35
+    cpus: 1
+    memory: 512
+
+    networks:
+      - type: multicast
+        address: "230.0.0.1:1234"
+        mac: "52:54:00:aa:bb:01"
+
+    disks:
+      - path: disks/mcast1.qcow2
+        format: qcow2
+        interface: virtio
+        size: 5G
+
+  ##############################################################
+  # 9. TAP Network with Bridge (requires host bridge setup)
+  ##############################################################
+  tap_vm:
+    arch: x86_64
+    machine: q35
+    cpus: 2
+    memory: 2048
+
+    networks:
+      - type: tap
+        ifname: tap0
+        bridge: br0
+        mac: "52:54:00:ab:cd:ef"
+
+    disks:
+      - path: disks/tapvm.qcow2
+        format: qcow2
+        interface: virtio
+        size: 20G
+
+  ##############################################################
+  # 10. WAN Simulation - High Latency & Packet Loss
+  ##############################################################
+  wan_sim:
+    arch: x86_64
+    machine: q35
+    cpus: 2
+    memory: 1024
+
+    networks:
+      - type: socket
+        mode: server
+        path: /tmp/qemu-wan.sock
+        conditions:
+          latency: 200ms
+          packet_loss: 10
+          bandwidth: 5mbps
+          jitter: 50ms
+
+    disks:
+      - path: disks/wan.qcow2
+        format: qcow2
+        interface: virtio
+        size: 10G
 
