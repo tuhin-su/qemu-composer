@@ -19,7 +19,7 @@ echo "Detected OS: $NAME $VERSION_ID"
 install_packages_debian() {
     echo "Installing packages for Debian/Ubuntu..."
     sudo apt update
-    sudo apt install -y qemu qemu-kvm qemu-utils python3-pip
+    sudo apt install -y python3-yml qemu qemu-kvm qemu-utils python3-pip
 }
 
 install_packages_redhat() {
@@ -57,13 +57,11 @@ for bin in "${QEMU_BINS[@]}"; do
     fi
 done
 
-# Install Python dependencies
-echo "Installing Python dependencies..."
-pip3 install --user pyyaml
 
 # Make qemu-compose executable
 if [ -f "qemu-compose" ]; then
     chmod +x qemu-compose
+    sudo cp -p qemu-compose /usr/local/bin
     echo "qemu-compose is now executable."
 else
     echo "qemu-compose not found in current directory."
