@@ -1,226 +1,338 @@
+# ⭐ **QEMU-Compose — Lightweight QEMU Orchestrator (Docker-Compose Style)**
 
-# QEMU-Compose
+Create and manage virtual machines using a simple YAML file.
 
-**QEMU-Compose** is a Docker-Compose-like helper for managing QEMU virtual machines. It allows you to define multiple VMs in a YAML file (`qemu-compose.yml`) or use pre-defined defaults. Supports hardware configuration, GPU/CPU emulation, disks, network, and auto-fills missing fields.
+QEMU-Compose allows you to:
 
----
-
-## Features
-
-* Define multiple VMs with **YAML configuration**.
-* **Defaults provided** for two PCs (`pc1` & `pc2`) if no YAML exists.
-* Supports **x86_64 / AMD64, ARM, aarch64** architectures.
-* Auto-create **QCOW2 disks** if missing.
-* Hardware emulation: CPU, RAM, Display (Spice/VNC), Battery, Sensors.
-* Network support with port forwarding.
-* VM lifecycle commands similar to Docker Compose: `up`, `down`, `start`, `stop`, `ps`, `logs`.
-* Auto **serial number generation** and other missing hardware fields.
-* Easy to extend for custom VMs.
+* Start/stop VMs using `qemu-compose up` / `qemu-compose down`
+* Configure CPUs, memory, architecture, disks, networks
+* Boot from ISO
+* Create mobile-like ARM devices (Android-style)
+* Fake hardware identity (IMEI, serial, vendor, model, MAC addresses)
+* Add touchscreen display, mobile resolution, sensors
+* Use KVM acceleration when available
+* Auto fallback to TCG when KVM not present
+* Manage monitor sockets and logs
+* Use safe defaults when options are not defined
 
 ---
 
-## Installation
-
-1. Clone or copy the script:
+# 📦 **Installation**
 
 ```bash
-git clone <your-repo>
+git clone https://github.com/yourname/qemu-compose
 cd qemu-compose
+sudo chmod +x install.sh
+sudo ./install.sh
 ```
 
-2. Install dependencies:
+This installs:
+
+* `~/.local/bin/qemu-compose`
+* Required folders
+* Permissions fix
+
+Run:
 
 ```bash
-pip install pyyaml
-```
-
-3. Ensure `qemu-system-*` and `qemu-img` are installed:
-
-```bash
-# Debian/Ubuntu
-sudo apt install qemu qemu-kvm qemu-utils
-```
-
-4. Make script executable:
-
-```bash
-chmod +x qemu-compose.py
+qemu-compose -h
 ```
 
 ---
 
-## Quick Start
+# 📘 **Basic Usage**
 
-### Start default VMs
-
-If no `qemu-compose.yml` is present, two default PCs will be created (`pc1` & `pc2`):
+Start VMs:
 
 ```bash
-./qemu-compose.py up
+qemu-compose up
 ```
 
-This will:
-
-* Create default disks in `images/`.
-* Start VMs with 4GB/8GB RAM, 4/6 CPU, Spice display, and network with SSH forwarding.
-
-### Stop VMs
+Stop VMs:
 
 ```bash
-./qemu-compose.py down
+qemu-compose down
 ```
 
-### Start a single VM
+Use a custom file:
 
 ```bash
-./qemu-compose.py start pc1
-```
-
-### Stop a single VM
-
-```bash
-./qemu-compose.py stop pc2
-```
-
-### List running VMs
-
-```bash
-./qemu-compose.py ps
-```
-
-### View VM logs
-
-```bash
-./qemu-compose.py logs pc1
+qemu-compose -f myvms.yml up
 ```
 
 ---
 
-## Configuration (`qemu-compose.yml`)
-
-You can define your own VMs in YAML. Example:
+# 🧩 **YAML Structure Overview**
 
 ```yaml
 version: "2.0"
+
 vms:
-  mypc:
-    arch: x86_64
-    machine: q35
-    cpus: 4
-    cpu_model: host
-    memory: 4096
+  <vm_name>:
+    arch: x86_64 | aarch64 | riscv64 | arm | ppc64
+    machine: q35 | pc | virt | raspi3 | virt-2.12
+    cpus: 2
+    cpu_model: host | max | cortex-a57
+    memory: 2048
+
+    # Optional hardware identity
+    hardware:
+      vendor: "Samsung"
+      model: "Galaxy S22"
+      board: "SM-S901"
+      serial: "A15578BXY9931"
+      imei: "355555112233444"
+      mac_wifi: "02:11:22:33:44:55"
+      mac_bt: "02:22:33:44:55:66"
+
+    # Display config
+    display:
+      type: gtk
+      width: 1080
+      height: 2400
+      dpi: 420
+      touchscreen: true
+
+    # Networking
     networks:
       - type: user
         forwards:
           - host_port: 2222
             guest_port: 22
+
+    # Boot order
+    boot:
+      - cdrom
+      - disks
+
+    # Disk devices
     disks:
-      - path: images/mypc.qcow2
+      - path: ./alpine.qcow2
         format: qcow2
         interface: virtio
+
+    # ISO image
+    cdrom:
+      path: ~/isos/alpine.iso
+      interface: ide
+
+    # Android-specific extras
+    sensors:
+      gps: true
+      accelerometer: true
+      gyroscope: true
+
+    modem:
+      enabled: true
+      imei: "355112233445566"
+      iccid: "8991101200003204512"
+      imsi: "404445557777777"
+
+    gps:
+      enabled: true
+      source: "./gps-feed.nmea"
+
+    kernel:
+      path: ./Image
+      dtb: ./devicetree.dtb
+      cmdline: "console=ttyAMA0 root=/dev/vda"
+```
+
+---
+
+# 🎮 **Example 1 — Standard PC (x86_64)**
+
+```yaml
+version: "2.0"
+
+vms:
+  pc1:
+    arch: x86_64
+    machine: q35
+    cpus: 4
+    cpu_model: host
+    memory: 4096
+
+    display:
+      type: gtk
+
+    networks:
+      - type: user
+        forwards:
+          - host_port: 2222
+            guest_port: 22
+
+    disks:
+      - path: ./debian.qcow2
+        format: qcow2
+        interface: virtio
+
+    cdrom:
+      path: ~/isos/debian-12.iso
+      interface: ide
+
+    boot:
+      - cdrom
+      - disks
+```
+
+---
+
+# 📱 **Example 2 — Android-like Mobile Device (ARM64)**
+
+```yaml
+version: "2.0"
+
+vms:
+  android_phone:
+    arch: aarch64
+    machine: virt
+    cpus: 8
+    cpu_model: cortex-a57
+    memory: 6144
+
+    # Mobile identity
     hardware:
-      vendor: "MyVendor"
-      product: "MyPC"
-      serial_number: AUTO
-      board_id: "BOARD001"
-      display:
-        type: spice
-        width: 1920
-        height: 1080
+      vendor: "Samsung"
+      model: "Galaxy S22"
+      board: "SM-S901"
+      serial: "A15578BXY9931"
+      imei: "355555112233444"
+      mac_wifi: "02:11:22:33:44:55"
+      mac_bt: "02:22:33:44:55:66"
+
+    display:
+      type: gtk
+      width: 1080
+      height: 2400
+      dpi: 420
+      touchscreen: true
+
+    sensors:
+      gps: true
+      accelerometer: true
+      gyroscope: true
+
+    modem:
+      enabled: true
+      imei: "355555112233444"
+      iccid: "8991101200003204512"
+      imsi: "404445557777777"
+
+    gps:
+      enabled: true
+      source: ./gps-track.nmea
+
+    networks:
+      - type: user
+
+    disks:
+      - path: ./android.qcow2
+        interface: virtio
+
+    kernel:
+      path: ./Image
+      dtb: ./android.dtb
+      cmdline: "console=ttyAMA0 androidboot.hardware=qemu"
 ```
-
-**Notes:**
-
-* `serial_number: AUTO` generates a random serial.
-* Missing fields are auto-filled with safe defaults.
-* Supports multiple VMs under the `vms:` section.
-* Network `forwards` maps host ports to guest VM ports.
 
 ---
 
-## Directory Structure
+# 💽 **Example 3 — Boot from ISO Only**
 
-```
-.
-├── images/             # QCOW2 disk images
-├── .qemu-compose/      # State (pids, logs)
-├── qemu-compose.py     # Main script
-├── qemu-compose.yml    # Optional YAML config
-└── README.md           # Documentation
+```yaml
+version: "2.0"
+
+vms:
+  liveos:
+    arch: x86_64
+    machine: pc
+    cpus: 2
+    memory: 2048
+
+    boot:
+      - cdrom
+
+    cdrom:
+      path: ~/isos/ubuntu.iso
 ```
 
 ---
 
-## Supported Architectures
+# 🖥️ **Example 4 — GPU Passthrough**
 
-* x86_64 / AMD64
-* i386
-* ARM (armv7, armhf)
-* AArch64 / ARM64
+```yaml
+version: "2.0"
 
-`qemu-compose.py` automatically detects the right `qemu-system-*` binary.
+vms:
+  gpu_vm:
+    arch: x86_64
+    machine: q35
+    cpus: 8
+    memory: 16384
+
+    pci_passthrough:
+      - host: "0000:01:00.0"   # GPU
+      - host: "0000:01:00.1"   # HDMI Audio
+
+    disks:
+      - path: ./win11.qcow2
+        interface: virtio
+
+    networks:
+      - type: user
+```
 
 ---
 
-## Disk Auto-Creation
+# 🛰 **Example 5 — RISC-V VM**
 
-If a disk path is missing, the script auto-creates a **qcow2 disk**:
+```yaml
+vms:
+  riscv_test:
+    arch: riscv64
+    machine: virt
+    cpus: 4
+    memory: 2048
+
+    disks:
+      - path: ./riscv.qcow2
+```
+
+---
+
+# 📑 **QEMU-Compose Features**
+
+| Feature                    | Supported |
+| -------------------------- | --------- |
+| x86, ARM, RISC-V, PPC64    | ✅         |
+| Boot from ISO              | ✅         |
+| GPU passthrough            | ✅         |
+| Custom hardware identity   | ✅         |
+| IMEI, Serial, Vendor       | ✅         |
+| Touchscreen                | ✅         |
+| Sensors (GPS, gyro, accel) | ✅         |
+| GPS NMEA feed              | ✅         |
+| KVM acceleration           | ✅         |
+| Auto fallback to TCG       | ✅         |
+| Multiple networks          | ✅         |
+| Port forwarding            | ✅         |
+| Multiple disks             | ✅         |
+| Monitor socket             | ✅         |
+| Logs                       | ✅         |
+
+---
+
+# 🔧 **Troubleshooting**
+
+### KVM not detected?
+
+Enable virtualization in BIOS and run:
 
 ```bash
-images/<vmname>.qcow2
-```
-
-Default size: **8GB** (change in code if needed).
-
----
-
-## Extra Features
-
-* **Hardware defaults** for display, sensors, battery.
-* **Spice** and **VNC** display support.
-* **Port forwarding** for SSH or other services.
-* Extra arguments can be passed via YAML `args:`.
-
----
-
-## Example Commands
-
-```bash
-# Start all VMs
-./qemu-compose.py up
-
-# Stop all VMs
-./qemu-compose.py down
-
-# Start a specific VM
-./qemu-compose.py start pc1
-
-# Stop a specific VM
-./qemu-compose.py stop pc2
-
-# Check status
-./qemu-compose.py ps
-
-# Tail logs
-./qemu-compose.py logs pc1
+sudo modprobe kvm
+sudo modprobe kvm_intel   # Intel
+sudo modprobe kvm_amd     # AMD
 ```
 
 ---
-
-## Tips
-
-* Use **Spice client** or **virt-viewer** to connect:
-
-```bash
-sudo apt install virt-viewer
-remote-viewer spice://127.0.0.1:5930
-```
-
-* Change disk sizes or RAM by modifying the YAML or default values in `qemu-compose.py`.
-* Add custom CPUs, GPUs, or devices using `args:`.
-
----
-
-## License
-
-MIT License – free to use.
