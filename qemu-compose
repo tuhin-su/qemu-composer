@@ -1,0 +1,334 @@
+#!/usr/bin/env python3
+import os
+import sys
+import shlex
+import subprocess
+import time
+import signal
+import random
+import shutil
+from pathlib import Path
+from argparse import ArgumentParser
+import yaml
+import copy
+
+ROOT = Path.cwd()
+CONF = ROOT / "qemu-compose.yml"
+STATE_DIR = ROOT / ".qemu-compose"
+PID_DIR = STATE_DIR / "pids"
+LOG_DIR = STATE_DIR / "logs"
+IMG_DIR = ROOT / "images"
+
+for d in (STATE_DIR, PID_DIR, LOG_DIR, IMG_DIR):
+    d.mkdir(parents=True, exist_ok=True)
+
+# -------------------------
+# DEFAULTS
+# -------------------------
+DEFAULTS = {
+    "arch": "x86_64",
+    "machine": "q35",
+    "cpus": 4,
+    "cpu_model": "host",
+    "memory": 4096,
+    "accel": "tcg",
+    "hardware": {
+        "vendor": "QEMU-PC",
+        "product": "Generic-PC",
+        "serial_number": "AUTO",
+        "board_id": "BOARD-PC",
+        "imei": None,
+        "battery": {},
+        "display": {
+            "type": "spice",
+            "width": 1920,
+            "height": 1080,
+            "dpi": 96
+        },
+        "sensors": {}
+    },
+    "networks": [
+        {"type": "user"}
+    ],
+    "disks": [],
+    "display": None,
+    "passthrough": {},
+    "args": []
+}
+
+# -------------------------
+# UTILITIES
+# -------------------------
+def deep_merge(default: dict, override: dict) -> dict:
+    out = copy.deepcopy(default)
+    def _merge(a, b):
+        for k, v in b.items():
+            if k in a and isinstance(a[k], dict) and isinstance(v, dict):
+                _merge(a[k], v)
+            else:
+                a[k] = copy.deepcopy(v)
+        return a
+    return _merge(out, override)
+
+def read_conf():
+    if CONF.exists():
+        try:
+            data = yaml.safe_load(CONF.read_text()) or {}
+            if "vms" not in data:
+                data = {"vms": {}}
+        except Exception as e:
+            print("Error parsing YAML:", e)
+            sys.exit(1)
+    else:
+        # Provide two default PCs
+        data = {
+            "vms": {
+                "pc1": {
+                    "arch": "x86_64",
+                    "machine": "q35",
+                    "cpus": 4,
+                    "cpu_model": "host",
+                    "memory": 4096,
+                    "networks": [{"type": "user", "forwards":[{"host_port":2222,"guest_port":22}]}],
+                    "disks": [{"path": IMG_DIR / "pc1.qcow2", "format":"qcow2", "interface":"virtio"}],
+                    "hardware": {"product":"Generic-PC1"}
+                },
+                "pc2": {
+                    "arch": "x86_64",
+                    "machine": "q35",
+                    "cpus": 6,
+                    "cpu_model": "host",
+                    "memory": 8192,
+                    "networks": [{"type": "user", "forwards":[{"host_port":2223,"guest_port":22}]}],
+                    "disks": [{"path": IMG_DIR / "pc2.qcow2", "format":"qcow2", "interface":"virtio"}],
+                    "hardware": {"product":"Generic-PC2"}
+                }
+            }
+        }
+    return data
+
+def vm_pidfile(name: str) -> Path:
+    return PID_DIR / f"{name}.pid"
+
+def vm_logfile(name: str) -> Path:
+    return LOG_DIR / f"{name}.log"
+
+def which_qemu(arch: str):
+    if arch in ("x86_64","amd64"):
+        bins = ["qemu-system-x86_64","qemu-system-i386"]
+    elif arch in ("aarch64","arm64"):
+        bins = ["qemu-system-aarch64"]
+    elif arch in ("arm","armv7","armhf"):
+        bins = ["qemu-system-arm"]
+    else:
+        bins = ["qemu-system-x86_64"]
+    for b in bins:
+        p = shutil.which(b)
+        if p:
+            return p
+    return bins[0]
+
+def generate_serial():
+    return "SN" + "".join(str(random.randint(0,9)) for _ in range(10))
+
+def ensure_disk(path: Path, size_gb=8):
+    if path.exists():
+        return
+    qemu_img = shutil.which("qemu-img")
+    if not qemu_img:
+        print("Warning: qemu-img not found; cannot auto-create disk:", path)
+        return
+    print(f"Creating disk: {path} ({size_gb}G)...")
+    subprocess.run([qemu_img,"create","-f","qcow2",str(path),f"{size_gb}G"], check=False)
+
+# -------------------------
+# Build QEMU command
+# -------------------------
+def build_qemu_cmd(name: str, spec: dict):
+    spec = deep_merge(DEFAULTS, spec or {})
+    arch = spec.get("arch", DEFAULTS["arch"])
+    qemu_bin = spec.get("qemu_bin") or which_qemu(arch)
+    cmd = [qemu_bin]
+
+    # Accel
+    accel = spec.get("accel")
+    if accel:
+        cmd += ["-accel", accel]
+
+    # Machine
+    machine = spec.get("machine")
+    if machine:
+        cmd += ["-machine", machine]
+
+    # CPUs / memory
+    cmd += ["-smp", str(spec.get("cpus",4))]
+    cmd += ["-m", str(spec.get("memory",4096))]
+    cpu_model = spec.get("cpu_model")
+    if cpu_model:
+        cmd += ["-cpu", cpu_model]
+
+    # Disks
+    disks = spec.get("disks", [])
+    if not disks:
+        auto_img = IMG_DIR / f"{name}_auto.qcow2"
+        ensure_disk(auto_img,8)
+        cmd += ["-drive", f"file={auto_img},if=virtio,format=qcow2"]
+    else:
+        for i,disk in enumerate(disks):
+            path = Path(disk["path"])
+            ensure_disk(path,8)
+            fmt = disk.get("format","qcow2")
+            interface = disk.get("interface","virtio")
+            cmd += ["-drive", f"file={path},if={interface},format={fmt}"]
+
+    # Networks
+    nets = spec.get("networks", [{"type":"user"}])
+    net_counter=0
+    for net in nets:
+        net_counter+=1
+        t = net.get("type","user")
+        netdev_id=f"net{net_counter}"
+        if t=="user":
+            netdev=f"user,id={netdev_id}"
+            forwards=net.get("forwards",[])
+            for fwd in forwards:
+                netdev += f",hostfwd=tcp::{fwd['host_port']}-:{fwd['guest_port']}"
+            cmd += ["-netdev",netdev]
+            cmd += ["-device", f"virtio-net-pci,netdev={netdev_id}"]
+        else:
+            cmd += ["-netdev",f"user,id={netdev_id}"]
+            cmd += ["-device", f"virtio-net-pci,netdev={netdev_id}"]
+
+    # Display
+    display = spec.get("display")
+    hw_display = spec.get("hardware",{}).get("display",{})
+    use_display = display if display else hw_display
+    if use_display:
+        dty = use_display.get("type","spice")
+        if dty=="spice":
+            cmd += ["-device","qxl-vga"]
+            cmd += ["-spice","addr=127.0.0.1,port=5930,disable-ticketing"]
+        elif dty=="vnc":
+            cmd += ["-vnc","127.0.0.1:0"]
+        elif dty=="virtio-gpu":
+            cmd += ["-device","virtio-gpu-pci"]
+        else:
+            cmd += ["-nographic"]
+    else:
+        cmd += ["-nographic"]
+
+    # Hardware serial
+    hw = spec.get("hardware",{})
+    if hw.get("serial_number")=="AUTO":
+        hw["serial_number"]=generate_serial()
+    serial=hw.get("serial_number")
+    if serial:
+        chardev_path=STATE_DIR/f"serial_{name}.sock"
+        cmd += ["-chardev",f"socket,id=serial0,path={chardev_path},server,nowait"]
+        cmd += ["-device",f"virtserialport,chardev=serial0,name=org.qemu.serial-{serial}"]
+
+    # Extra args
+    for a in spec.get("args",[]):
+        if isinstance(a,str):
+            cmd += shlex.split(a)
+        else:
+            cmd.append(str(a))
+
+    # Monitor socket
+    mon_sock=STATE_DIR/f"{name}.monitor"
+    if mon_sock.exists(): mon_sock.unlink()
+    cmd += ["-monitor",f"unix:{mon_sock},server,nowait"]
+
+    return cmd
+
+# -------------------------
+# VM lifecycle
+# -------------------------
+def start_vm(name,spec):
+    pidf=vm_pidfile(name)
+    if pidf.exists():
+        print(f"[{name}] already running.")
+        return
+    cmd=build_qemu_cmd(name,spec)
+    logf=vm_logfile(name)
+    print(f"Starting {name} ...")
+    print(" ".join(map(shlex.quote,cmd)))
+    with open(logf,"ab") as lf:
+        p=subprocess.Popen(cmd,stdout=lf,stderr=lf,stdin=subprocess.DEVNULL)
+    time.sleep(0.2)
+    pidf.write_text(str(p.pid))
+    print(f"{name} started (pid={p.pid}) logs -> {logf}")
+
+def stop_vm(name):
+    pidf=vm_pidfile(name)
+    if not pidf.exists():
+        print(f"[{name}] not running.")
+        return
+    try:
+        pid=int(pidf.read_text().strip())
+        os.kill(pid,signal.SIGTERM)
+        for _ in range(25):
+            time.sleep(0.2)
+            try: os.kill(pid,0)
+            except OSError: break
+        else:
+            os.kill(pid,signal.SIGKILL)
+    except: pass
+    pidf.unlink(missing_ok=True)
+    print(f"{name} stopped.")
+
+def ps(conf):
+    vms=conf.get("vms",{}) or {}
+    for name in vms:
+        pidf=vm_pidfile(name)
+        status="stopped"
+        if pidf.exists():
+            try:
+                pid=int(pidf.read_text().strip())
+                os.kill(pid,0)
+                status=f"running (pid {pid})"
+            except: status="stopped"
+        print(f"{name}: {status}")
+
+def logs(name):
+    lf=vm_logfile(name)
+    if not lf.exists():
+        print(f"No log for {name}")
+        return
+    with open(lf,"rb") as f:
+        print(f.read().decode(errors="ignore"))
+
+# -------------------------
+# MAIN CLI
+# -------------------------
+def main():
+    parser = ArgumentParser(prog="qemu-compose.py")
+    parser.add_argument("cmd",choices=["up","start","stop","down","ps","logs"])
+    parser.add_argument("vm",nargs="?")
+    args=parser.parse_args()
+
+    conf=read_conf()
+    vms=conf.get("vms",{}) or {}
+
+    if args.cmd=="up":
+        for name,spec in vms.items():
+            start_vm(name,spec)
+    elif args.cmd=="start":
+        if not args.vm: print("Specify VM"); return
+        start_vm(args.vm,vms[args.vm])
+    elif args.cmd=="stop":
+        if not args.vm: print("Specify VM"); return
+        stop_vm(args.vm)
+    elif args.cmd=="down":
+        for name in list(vms.keys()):
+            stop_vm(name)
+    elif args.cmd=="ps":
+        ps(conf)
+    elif args.cmd=="logs":
+        if not args.vm: print("Specify VM"); return
+        logs(args.vm)
+    else:
+        parser.print_help()
+
+if __name__=="__main__":
+    main()

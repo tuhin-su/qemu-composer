@@ -1,0 +1,101 @@
+version: "2.0"
+
+vms:
+  # Default Desktop PC
+  pc1:
+    arch: x86_64
+    machine: q35
+    cpus: 4
+    cpu_model: host
+    memory: 4096
+    networks:
+      - type: user
+        forwards:
+          - host_port: 2222
+            guest_port: 22
+    disks:
+      - path: images/pc1.qcow2
+        format: qcow2
+        interface: virtio
+    hardware:
+      vendor: "QEMU-PC"
+      product: "Generic-PC1"
+      serial_number: AUTO
+      board_id: "BOARD-PC1"
+      display:
+        type: spice
+        width: 1920
+        height: 1080
+      battery:
+        present: true
+      sensors:
+        temperature: true
+    args:
+      - "-vga qxl"
+
+  # Second PC with more RAM
+  pc2:
+    arch: x86_64
+    machine: q35
+    cpus: 6
+    cpu_model: host
+    memory: 8192
+    networks:
+      - type: user
+        forwards:
+          - host_port: 2223
+            guest_port: 22
+    disks:
+      - path: images/pc2.qcow2
+        format: qcow2
+        interface: virtio
+    hardware:
+      vendor: "QEMU-PC"
+      product: "Generic-PC2"
+      serial_number: AUTO
+      board_id: "BOARD-PC2"
+      display:
+        type: spice
+        width: 2560
+        height: 1440
+      battery:
+        present: true
+      sensors:
+        temperature: true
+    args:
+      - "-vga virtio"
+
+  # Example ARM mobile device
+  mobile1:
+    arch: aarch64
+    machine: virt
+    cpus: 4
+    memory: 2048
+    networks:
+      - type: user
+        forwards:
+          - host_port: 2224
+            guest_port: 22
+    disks:
+      - path: images/mobile1.qcow2
+        format: qcow2
+        interface: virtio
+    hardware:
+      vendor: "MobileVendor"
+      product: "MobilePhone1"
+      serial_number: AUTO
+      imei: AUTO
+      board_id: "MOBILE-BOARD-1"
+      display:
+        type: virtio-gpu
+        width: 1080
+        height: 2340
+      battery:
+        present: true
+        capacity_mAh: 4000
+      sensors:
+        accelerometer: true
+        gyroscope: true
+    args:
+      - "-device virtio-gpu-pci"
+      - "-nographic"  # Optional for headless testing
