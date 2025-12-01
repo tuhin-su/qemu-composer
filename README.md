@@ -298,7 +298,118 @@ vms:
     disks:
       - path: ./riscv.qcow2
 ```
+---
+# ⭐ **Two VMs on the Same LAN (Bridge Mode)**
 
+### Requirements:
+
+You need a Linux bridge:
+
+```bash
+sudo ip link add name br0 type bridge
+sudo ip addr add 192.168.100.1/24 dev br0
+sudo ip link set br0 up
+```
+
+Enable DHCP server if needed (dnsmasq/default).
+
+Add your internet NIC (example: `eth0`) to bridge if you want NAT internet:
+
+```bash
+sudo ip link set eth0 master br0
+```
+
+---
+
+# 🧩 **Full Working YAML (vm1 ↔ vm2 LAN)**
+
+```yaml
+version: "2.0"
+
+vms:
+  mypc:
+    arch: x86_64
+    machine: q35
+
+    cpus: 1
+    cpu_model: host
+    memory: 1024
+
+    display:
+      type: sdl
+      fullscreen: false
+
+    networks:
+      - type: tap
+        bridge: br0
+        mac: "52:54:00:12:34:01"
+
+    disks:
+      - path: ./alpine.qcow2
+        format: qcow2
+        interface: virtio
+
+  mypc2:
+    arch: x86_64
+    machine: q35
+
+    cpus: 1
+    cpu_model: host
+    memory: 1024
+
+    display:
+      type: sdl
+      fullscreen: false
+
+    networks:
+      - type: tap
+        bridge: br0
+        mac: "52:54:00:12:34:02"
+
+    disks:
+      - path: ./alpine2.qcow2
+        format: qcow2
+        interface: virtio
+```
+
+---
+
+# 📡 **How VM Networking Works Here**
+
+### VM1
+
+* MAC: `52:54:00:12:34:01`
+* On the same bridge `br0`
+  → behaves like a real PC on LAN
+
+### VM2
+
+* MAC: `52:54:00:12:34:02`
+* Same bridge
+  → can ping and communicate with VM1
+
+### They both get IP from
+
+* dhcp on br0 (your host) or
+* static IP inside Alpine
+
+Example inside VM1:
+
+```bash
+ip addr add 192.168.100.10/24 dev eth0
+```
+
+Inside VM2:
+
+```bash
+ip addr add 192.168.100.11/24 dev eth0
+```
+
+Test:
+
+```bash
+ping 192.168.100.11
+```
 ---
 
 # 📑 **QEMU-Compose Features**
