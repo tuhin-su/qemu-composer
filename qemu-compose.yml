@@ -1,91 +1,133 @@
 version: "2.0"
 
 vms:
-  # Default Desktop PC
-  pc1:
+
+  ##############################################################
+  # 1. Standard x86_64 PC — boots from ISO first
+  ##############################################################
+  mypc:
     arch: x86_64
     machine: q35
+    accel: kvm
     cpus: 4
     cpu_model: host
     memory: 4096
+
+    boot:
+      - cdrom
+      - disk
+
     networks:
       - type: user
         forwards:
           - host_port: 2222
-            guest_port: 22
+            guest_port: 22        # SSH access
+          - host_port: 8081
+            guest_port: 80        # Web server example
+
     disks:
-      - path: images/pc1.qcow2
+      - path: disks/mypc.qcow2
         format: qcow2
         interface: virtio
+        size: 20G                 # auto-create if missing
+
+    cdrom:
+      path: iso/alpine.iso        # bootable ISO
+      interface: ide
+
     hardware:
       vendor: "QEMU-PC"
-      product: "Generic-PC1"
+      product: "MyPC"
       serial_number: AUTO
-      board_id: "BOARD-PC1"
+      board_id: "BOARD-MYPC"
+      bios: OVMF
       display:
         type: spice
         width: 1920
         height: 1080
+        dpi: 96
       battery:
-        present: true
+        present: false
       sensors:
         temperature: true
+        fan: true
+
+    audio:
+      type: ac97
+
+    usb:
+      - device: usb-tablet
+      - device: usb-kbd
+
     args:
       - "-vga qxl"
+      - "-device ich9-usb-ehci1"
+      - "-device ich9-usb-uhci1"
 
-  # Second PC with more RAM
+  ##############################################################
+  # 2. High-performance PC with VNC display
+  ##############################################################
   pc2:
     arch: x86_64
     machine: q35
-    cpus: 6
-    cpu_model: host
-    memory: 8192
+    cpus: 8
+    memory: 16384
     networks:
       - type: user
         forwards:
           - host_port: 2223
             guest_port: 22
+
     disks:
-      - path: images/pc2.qcow2
+      - path: disks/pc2.qcow2
         format: qcow2
         interface: virtio
+        size: 30G
+
     hardware:
-      vendor: "QEMU-PC"
-      product: "Generic-PC2"
+      vendor: "QEMU"
+      product: "Performance-PC"
       serial_number: AUTO
-      board_id: "BOARD-PC2"
       display:
-        type: spice
-        width: 2560
-        height: 1440
-      battery:
-        present: true
-      sensors:
-        temperature: true
+        type: vnc
+        port: 5905
+      sensors: {}
+      battery: {}
+
     args:
+      - "-enable-kvm"
       - "-vga virtio"
 
-  # Example ARM mobile device
+  ##############################################################
+  # 3. ARM Mobile Device Emulation (phone-like)
+  ##############################################################
   mobile1:
     arch: aarch64
     machine: virt
     cpus: 4
     memory: 2048
+    accel: tcg        # no KVM on ARM emulation
+    boot:
+      - disk
+
     networks:
       - type: user
         forwards:
           - host_port: 2224
             guest_port: 22
+
     disks:
-      - path: images/mobile1.qcow2
+      - path: disks/mobileos.qcow2
         format: qcow2
         interface: virtio
+        size: 8G
+
     hardware:
       vendor: "MobileVendor"
       product: "MobilePhone1"
       serial_number: AUTO
       imei: AUTO
-      board_id: "MOBILE-BOARD-1"
+      board_id: "MOBILE-001"
       display:
         type: virtio-gpu
         width: 1080
@@ -96,6 +138,48 @@ vms:
       sensors:
         accelerometer: true
         gyroscope: true
+        proximity: true
+        temperature: true
+
+    usb:
+      - device: usb-net
+      - device: usb-keyboard
+
     args:
       - "-device virtio-gpu-pci"
-      - "-nographic"  # Optional for headless testing
+      - "-device virtio-mouse-device"
+      - "-device virtio-keyboard-device"
+      - "-nographic"       # run without GUI (optional)
+
+  ##############################################################
+  # 4. GPU Passthrough Example (placeholder)
+  ##############################################################
+  gpuvm:
+    arch: x86_64
+    machine: q35
+    cpus: 6
+    memory: 8192
+    accel: kvm
+    disks:
+      - path: disks/gpuvm.qcow2
+        format: qcow2
+        interface: virtio
+        size: 40G
+
+    hardware:
+      vendor: "QEMU"
+      product: "GPU-VM"
+      serial_number: AUTO
+      display:
+        type: none
+
+    gpu_passthrough:
+      pci_id: "0000:01:00.0"
+      audio_id: "0000:01:00.1"
+
+    args:
+      - "-enable-kvm"
+      - "-cpu host"
+      - "-device vfio-pci,host=0000:01:00.0,multifunction=on"
+      - "-device vfio-pci,host=0000:01:00.1"
+
