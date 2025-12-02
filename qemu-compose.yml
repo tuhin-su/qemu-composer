@@ -18,6 +18,12 @@ vms:
       - cdrom
       - disk
 
+    serial:
+      type: unix
+      path: /tmp/serial.sock
+      server: true
+      nowait: true
+
     networks:
       - type: user
         forwards:
