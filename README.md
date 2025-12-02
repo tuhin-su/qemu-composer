@@ -1,769 +1,445 @@
-# ⭐ **QEMU-Compose — Lightweight QEMU Orchestrator (Docker-Compose Style)**
 
-Create and manage virtual machines using a simple YAML file.
-
-QEMU-Compose allows you to:
-
-* Start/stop VMs using `qemu-compose up` / `qemu-compose down`
-* Configure CPUs, memory, architecture, disks, networks
-* Boot from ISO
-* Create mobile-like ARM devices (Android-style)
-* Fake hardware identity (IMEI, serial, vendor, model, MAC addresses)
-* Add touchscreen display, mobile resolution, sensors
-* Use KVM acceleration when available
-* Auto fallback to TCG when KVM not present
-* Manage monitor sockets and logs
-* Use safe defaults when options are not defined
+✔ How the YAML works
+✔ How to configure ANY QEMU feature
+✔ Full examples
+✔ Networking (tap, user, socket, vlan, bridge)
+✔ Disks (multiple drives, CDROM)
+✔ Serial sockets / monitor sockets
+✔ Headless & GUI
+✔ CPU tuning, icount, throttle
+✔ USB, PCI passthrough (if needed)
+✔ Snapshots
+✔ How to run/stop VMs
+✔ How logs & sockets work
 
 ---
 
-# 📦 **Installation**
+# ✅ **QEMU-COMPOSE COMPLETE USER GUIDE**
 
-```bash
-git clone https://github.com/yourname/qemu-compose
-cd qemu-compose
-sudo chmod +x install.sh
-sudo ./install.sh
-```
-
-This installs:
-
-* `~/.local/bin/qemu-compose`
-* Required folders
-* Permissions fix
-
-Run:
-
-```bash
-qemu-compose -h
-```
+**Version 1.0 – Supports almost all QEMU features through YAML**
 
 ---
 
-# 📘 **Basic Usage**
+# 1️⃣ **Folder Structure**
 
-Start VMs:
-
-```bash
-qemu-compose up
-```
-
-Stop VMs:
+When you run:
 
 ```bash
-qemu-compose down
+python3 qemu-compose.py up -f qemu-compose.yml
 ```
 
-Use a custom file:
+it auto-creates:
 
-```bash
-qemu-compose -f myvms.yml up
 ```
+/tmp/qemu-compose/
+│
+├── logs/       → VM logs
+├── sockets/    → Serial / network sockets
+├── routerVm.monitor  → QEMU monitor socket
+└── alpineVm.monitor  → monitor socket
+```
+
+No need to create manually.
 
 ---
 
-# 🧩 **YAML Structure Overview**
+# 2️⃣ **Basic YAML Structure**
+
+Your YAML file structure:
 
 ```yaml
 version: "2.0"
 
 vms:
-  <vm_name>:
-    arch: x86_64 | aarch64 | riscv64 | arm | ppc64
-    machine: q35 | pc | virt | raspi3 | virt-2.12
-    cpus: 2
-    cpu_model: host | max | cortex-a57
-    cpu_max_speed: 100  # CPU speed limit (1-100%), default: 100
-    memory: 2048
+  vmName:
+    arch:
+    machine:
+    cpus:
+    cpu_model:
+    memory:
+    cpu_max_speed:
 
-    # Networking (multiple types supported)
-    networks:
-      - type: user | socket | tap | vlan | multicast
-        # Socket networking (VM-to-VM)
-        mode: server | client
-        path: /tmp/qemu-net.sock
-        # Network conditions
-        conditions:
-          latency: 50ms
-          packet_loss: 2
-          bandwidth: 100mbps
-          jitter: 10ms
-        # MAC address (auto-generated if not specified)
-        mac: "52:54:00:12:34:56"
-
-    # Optional hardware identity
-    hardware:
-      vendor: "Samsung"
-      model: "Galaxy S22"
-      board: "SM-S901"
-      serial: "A15578BXY9931"
-      imei: "355555112233444"
-      mac_wifi: "02:11:22:33:44:55"
-      mac_bt: "02:22:33:44:55:66"
-
-    # Display config
     display:
-      type: gtk
-      width: 1080
-      height: 2400
-      dpi: 420
-      touchscreen: true
+      type:
+      width:
+      height:
+      fullscreen:
 
-    # Networking
+    serial:
+      type:
+      path:
+      server:
+      nowait:
+
     networks:
-      - type: user
-        forwards:
-          - host_port: 2222
-            guest_port: 22
+      - type: ...
+        <options>
 
-    # Boot order
-    boot:
-      - cdrom
-      - disks
-
-    # Disk devices
     disks:
-      - path: ./alpine.qcow2
-        format: qcow2
-        interface: virtio
+      - path: ...
+        format: ...
+        interface: ...
 
-    # ISO image
     cdrom:
-      path: ~/isos/alpine.iso
-      interface: ide
-
-    # Android-specific extras
-    sensors:
-      gps: true
-      accelerometer: true
-      gyroscope: true
-
-    modem:
-      enabled: true
-      imei: "355112233445566"
-      iccid: "8991101200003204512"
-      imsi: "404445557777777"
-
-    gps:
-      enabled: true
-      source: "./gps-feed.nmea"
-
-    kernel:
-      path: ./Image
-      dtb: ./devicetree.dtb
-      cmdline: "console=ttyAMA0 root=/dev/vda"
+      path: ...
+      interface:
 ```
 
 ---
 
-# 🎮 **Example 1 — Standard PC (x86_64)**
+# 3️⃣ **Supported QEMU Features in YAML**
+
+## ✔ CPU features
+
+```
+cpus: 4
+cpu_model: host   # or qemu64, max
+cpu_max_speed: 50 # throttle CPU (via icount)
+```
+
+## ✔ Display modes
+
+```
+display:
+  type: none      # full headless
+  type: sdl       # SDL window
+  type: gtk       # GTK window
+  fullscreen: true
+```
+
+If **type: none**, system uses:
+
+```
+-nographic -serial mon:stdio
+```
+
+## ✔ Unlimited disks
+
+```
+disks:
+  - path: disk1.qcow2
+    format: qcow2
+    interface: virtio
+  - path: disk2.img
+    format: raw
+    interface: ide
+  - path: disk3.qcow2
+    format: qcow2
+    interface: scsi
+```
+
+## ✔ CDROM / ISO
+
+```
+cdrom:
+  path: ubuntu.iso
+  interface: ide
+```
+
+## ✔ Serial sockets
+
+```
+serial:
+  type: unix
+  path: /tmp/qemu-compose/sockets/router.sock
+  server: true
+  nowait: true
+```
+
+Connect using:
+
+```
+socat -,raw,echo=0 unix-connect:/tmp/qemu-compose/sockets/router.sock
+```
+
+## ✔ Monitor socket
+
+Automatically created
+
+```
+/tmp/qemu-compose/routerVm.monitor
+```
+
+Send commands:
+
+```
+socat - UNIX-CONNECT:/tmp/qemu-compose/routerVm.monitor
+```
+
+Commands example:
+
+```
+info block
+info network
+system_powerdown
+```
+
+---
+
+# 4️⃣ **Networking Types (FULL SUPPORT)**
+
+## ✔ user (NAT + Port forwarding)
+
+```
+- type: user
+  forwards:
+    - host_port: 8080
+      guest_port: 80
+    - host_port: 2222
+      guest_port: 22
+```
+
+Generates:
+
+```
+-netdev user,id=net1,hostfwd=tcp::8080-:80,hostfwd=tcp::2222-:22
+```
+
+## ✔ tap (host TAP device)
+
+```
+- type: tap
+  tap: tap0
+  mac: "52:54:00:aa:bb:cc"
+  script: no
+  downscript: no
+```
+
+Requires you created:
+
+```
+sudo ip tuntap add tap0 mode tap user $USER
+sudo ip link set tap0 up
+```
+
+## ✔ socket (inter-VM link)
+
+```
+- type: socket
+  mode: server
+  path: /tmp/qemu-compose/sockets/vm1.sock
+```
+
+Another VM:
+
+```
+- type: socket
+  mode: connect
+  path: /tmp/qemu-compose/sockets/vm1.sock
+```
+
+## ✔ vlan (legacy)
+
+```
+- type: vlan
+  vlan_id: 20
+  parent: user
+```
+
+---
+
+# 5️⃣ **Snapshots (qcow2 internal)**
+
+Full snapshot support from YAML:
+
+```
+snapshot: true
+```
+
+This triggers `-snapshot` (write-temporary overlay).
+
+---
+
+# 6️⃣ **USB Passthrough**
+
+```
+usb:
+  - vendor: "046d"
+    product: "c534"
+```
+
+Maps to:
+
+```
+-device usb-host,vendorid=0x046d,productid=0xc534
+```
+
+---
+
+# 7️⃣ **PCI Passthrough**
+
+(Requires VT-d / IOMMU)
+
+```
+pci_passthrough:
+  - device: "0000:01:00.0"
+```
+
+QEMU:
+
+```
+-device vfio-pci,host=0000:01:00.0
+```
+
+---
+
+# 8️⃣ **Full Example: RouterOS + Alpine**
 
 ```yaml
 version: "2.0"
 
 vms:
-  pc1:
+  routerVm:
     arch: x86_64
     machine: q35
-    cpus: 4
+    cpus: 2
+    memory: 1024
     cpu_model: host
-    memory: 4096
 
     display:
-      type: gtk
+      type: none
+
+    serial:
+      type: unix
+      path: /tmp/qemu-compose/sockets/router.sock
+      server: true
+      nowait: true
 
     networks:
       - type: user
         forwards:
-          - host_port: 2222
-            guest_port: 22
+          - host_port: 8080
+            guest_port: 80
+
+      - type: tap
+        tap: tap0
+        mac: "52:54:00:12:34:10"
 
     disks:
-      - path: ./debian.qcow2
+      - path: chr-7.20.5.qcow2
         format: qcow2
         interface: virtio
 
-    cdrom:
-      path: ~/isos/debian-12.iso
-      interface: ide
-
-    boot:
-      - cdrom
-      - disks
-```
-
----
-
-# 📱 **Example 2 — Android-like Mobile Device (ARM64)**
-
-```yaml
-version: "2.0"
-
-vms:
-  android_phone:
-    arch: aarch64
-    machine: virt
-    cpus: 8
-    cpu_model: cortex-a57
-    memory: 6144
-
-    # Mobile identity
-    hardware:
-      vendor: "Samsung"
-      model: "Galaxy S22"
-      board: "SM-S901"
-      serial: "A15578BXY9931"
-      imei: "355555112233444"
-      mac_wifi: "02:11:22:33:44:55"
-      mac_bt: "02:22:33:44:55:66"
-
-    display:
-      type: gtk
-      width: 1080
-      height: 2400
-      dpi: 420
-      touchscreen: true
-
-    sensors:
-      gps: true
-      accelerometer: true
-      gyroscope: true
-
-    modem:
-      enabled: true
-      imei: "355555112233444"
-      iccid: "8991101200003204512"
-      imsi: "404445557777777"
-
-    gps:
-      enabled: true
-      source: ./gps-track.nmea
-
-    networks:
-      - type: user
-
-    disks:
-      - path: ./android.qcow2
-        interface: virtio
-
-    kernel:
-      path: ./Image
-      dtb: ./android.dtb
-      cmdline: "console=ttyAMA0 androidboot.hardware=qemu"
-```
-
----
-
-# 💽 **Example 3 — Boot from ISO Only**
-
-```yaml
-version: "2.0"
-
-vms:
-  liveos:
+  alpineVm:
     arch: x86_64
-    machine: pc
+    machine: q35
     cpus: 2
     memory: 2048
-
-    boot:
-      - cdrom
-
-    cdrom:
-      path: ~/isos/ubuntu.iso
-```
-
----
-
-# 🖥️ **Example 4 — GPU Passthrough**
-
-```yaml
-version: "2.0"
-
-vms:
-  gpu_vm:
-    arch: x86_64
-    machine: q35
-    cpus: 8
-    memory: 16384
-
-    pci_passthrough:
-      - host: "0000:01:00.0"   # GPU
-      - host: "0000:01:00.1"   # HDMI Audio
-
-    disks:
-      - path: ./win11.qcow2
-        interface: virtio
-
-    networks:
-      - type: user
-```
-
----
-
-# 🛰 **Example 5 — RISC-V VM**
-
-```yaml
-vms:
-  riscv_test:
-    arch: riscv64
-    machine: virt
-    cpus: 4
-    memory: 2048
-
-    disks:
-      - path: ./riscv.qcow2
-```
-
----
-
-# ⚡ **Example 6 — CPU Speed Limiting (ESP32-like)**
-
-Limit CPU performance to simulate low-power devices or test under constrained conditions.
-
-```yaml
-version: "2.0"
-
-vms:
-  esp32_sim:
-    arch: x86_64
-    machine: q35
-    cpus: 1
-    cpu_max_speed: 25  # Limit to 25% of max speed
-    memory: 512
-
-    networks:
-      - type: user
-        forwards:
-          - host_port: 2225
-            guest_port: 22
-
-    disks:
-      - path: ./esp32sim.qcow2
-        format: qcow2
-        interface: virtio
-        size: 2G
-```
-
-**Use Cases:**
-- Simulate embedded devices (ESP32, Arduino, etc.)
-- Test application performance under CPU constraints
-- Battery life simulation for mobile devices
-- Development of power-efficient software
-
-**CPU Speed Values:**
-- `cpu_max_speed: 100` — Full speed (default)
-- `cpu_max_speed: 75` — 75% of max speed
-- `cpu_max_speed: 50` — Half speed
-- `cpu_max_speed: 25` — Quarter speed (very slow, embedded-like)
-
----
-
-# 🌐 **Example 7 — Advanced Networking: Socket VM-to-VM**
-
-Connect multiple VMs directly using socket networking (no root required).
-
-```yaml
-version: "2.0"
-
-vms:
-  server:
-    arch: x86_64
-    cpus: 2
-    memory: 1024
-
-    networks:
-      - type: socket
-        mode: server
-        path: /tmp/qemu-lan.sock
-        mac: "52:54:00:12:34:01"
-
-    disks:
-      - path: ./server.qcow2
-        format: qcow2
-        interface: virtio
-
-  client:
-    arch: x86_64
-    cpus: 2
-    memory: 1024
-
-    networks:
-      - type: socket
-        mode: client
-        path: /tmp/qemu-lan.sock
-        mac: "52:54:00:12:34:02"
-
-    disks:
-      - path: ./client.qcow2
-        format: qcow2
-        interface: virtio
-```
-
-**How it works:**
-1. Server VM creates socket at `/tmp/qemu-lan.sock`
-2. Client VM connects to the same socket
-3. VMs can communicate directly (ping, SSH, etc.)
-4. No root privileges required
-5. Isolated from host network
-
----
-
-# 🌍 **Example 8 — WAN Simulation with Network Conditions**
-
-Simulate slow WAN connections with latency and packet loss.
-
-```yaml
-version: "2.0"
-
-vms:
-  wan_server:
-    arch: x86_64
-    cpus: 2
-    memory: 1024
-
-    networks:
-      - type: socket
-        mode: server
-        path: /tmp/qemu-wan.sock
-        conditions:
-          latency: 200ms      # 200ms delay
-          packet_loss: 10     # 10% packet loss
-          bandwidth: 5mbps    # 5 Mbps limit
-          jitter: 50ms        # 50ms variance
-
-    disks:
-      - path: ./wan-server.qcow2
-        format: qcow2
-        interface: virtio
-```
-
-**Use Cases:**
-- Test application behavior on slow networks
-- Simulate international connections
-- Test timeout and retry logic
-- Develop resilient network applications
-
-**Note:** Network conditions are parsed and displayed. For TAP networks, apply conditions on the host using `tc netem`:
-```bash
-sudo tc qdisc add dev tap0 root netem delay 200ms loss 10%
-```
-
----
-
-# 📡 **Example 9 — Multicast Networking**
-
-Connect multiple VMs on the same multicast network.
-
-```yaml
-version: "2.0"
-
-vms:
-  node1:
-    arch: x86_64
-    cpus: 1
-    memory: 512
-
-    networks:
-      - type: multicast
-        address: "230.0.0.1:1234"
-        mac: "52:54:00:aa:bb:01"
-
-    disks:
-      - path: ./node1.qcow2
-        format: qcow2
-        interface: virtio
-
-  node2:
-    arch: x86_64
-    cpus: 1
-    memory: 512
-
-    networks:
-      - type: multicast
-        address: "230.0.0.1:1234"
-        mac: "52:54:00:aa:bb:02"
-
-    disks:
-      - path: ./node2.qcow2
-        format: qcow2
-        interface: virtio
-```
-
-**Benefits:**
-- All VMs on same multicast address can communicate
-- Broadcast and multicast traffic works
-- Great for cluster simulations
-- No server/client distinction needed
-
----
-# ⭐ **Two VMs on the Same LAN (Bridge Mode)**
-
-### Requirements:
-
-You need a Linux bridge:
-
-```bash
-sudo ip link add name br0 type bridge
-sudo ip addr add 192.168.100.1/24 dev br0
-sudo ip link set br0 up
-```
-
-Enable DHCP server if needed (dnsmasq/default).
-
-Add your internet NIC (example: `eth0`) to bridge if you want NAT internet:
-
-```bash
-sudo ip link set eth0 master br0
-```
-
----
-
-# 🧩 **Full Working YAML (vm1 ↔ vm2 LAN)**
-
-```yaml
-version: "2.0"
-
-vms:
-  mypc:
-    arch: x86_64
-    machine: q35
-
-    cpus: 1
-    cpu_model: host
-    memory: 1024
 
     display:
       type: sdl
-      fullscreen: false
 
     networks:
       - type: tap
-        bridge: br0
+        tap: tap1
         mac: "52:54:00:12:34:01"
 
     disks:
-      - path: ./alpine.qcow2
-        format: qcow2
-        interface: virtio
-
-  mypc2:
-    arch: x86_64
-    machine: q35
-
-    cpus: 1
-    cpu_model: host
-    memory: 1024
-
-    display:
-      type: sdl
-      fullscreen: false
-
-    networks:
-      - type: tap
-        bridge: br0
-        mac: "52:54:00:12:34:02"
-
-    disks:
-      - path: ./alpine2.qcow2
+      - path: alpine.qcow2
         format: qcow2
         interface: virtio
 ```
 
 ---
 
-# 📡 **How VM Networking Works Here**
+# 9️⃣ **How to Start / Stop**
 
-### VM1
+### **Start all VMs**
 
-* MAC: `52:54:00:12:34:01`
-* On the same bridge `br0`
-  → behaves like a real PC on LAN
-
-### VM2
-
-* MAC: `52:54:00:12:34:02`
-* Same bridge
-  → can ping and communicate with VM1
-
-### They both get IP from
-
-* dhcp on br0 (your host) or
-* static IP inside Alpine
-
-Example inside VM1:
-
-```bash
-ip addr add 192.168.100.10/24 dev eth0
+```
+python3 qemu-compose.py up
 ```
 
-Inside VM2:
+### **Stop**
 
-```bash
-ip addr add 192.168.100.11/24 dev eth0
 ```
-
-Test:
-
-```bash
-ping 192.168.100.11
-```
----
-
-# 📑 **QEMU-Compose Features**
-
-| Feature                    | Supported |
-| -------------------------- | --------- |
-| x86, ARM, RISC-V, PPC64    | ✅         |
-| Boot from ISO              | ✅         |
-| GPU passthrough            | ✅         |
-| Custom hardware identity   | ✅         |
-| IMEI, Serial, Vendor       | ✅         |
-| Touchscreen                | ✅         |
-| Sensors (GPS, gyro, accel) | ✅         |
-| GPS NMEA feed              | ✅         |
-| KVM acceleration           | ✅         |
-| Auto fallback to TCG       | ✅         |
-| CPU speed limiting         | ✅         |
-| Socket networking (VM-VM)  | ✅         |
-| TAP/Bridge networking      | ✅         |
-| Multicast networking       | ✅         |
-| VLAN support               | ✅         |
-| Network conditions         | ✅         |
-| MAC address auto-gen       | ✅         |
-| Multiple networks          | ✅         |
-| Port forwarding            | ✅         |
-| Multiple disks             | ✅         |
-| Monitor socket             | ✅         |
-| Logs                       | ✅         |
-
----
-
-# � **Networking Guide**
-
-## Network Types
-
-### 1. **User Mode (NAT)**
-- **Type**: `user`
-- **Root required**: No
-- **Use case**: Internet access, port forwarding
-- **Limitations**: VMs cannot communicate with each other
-
-```yaml
-networks:
-  - type: user
-    forwards:
-      - host_port: 2222
-        guest_port: 22
-```
-
-### 2. **Socket Networking**
-- **Type**: `socket`
-- **Root required**: No
-- **Use case**: VM-to-VM communication
-- **Modes**: `server` (creates socket), `client` (connects to socket)
-
-```yaml
-# Server VM
-networks:
-  - type: socket
-    mode: server
-    path: /tmp/qemu-lan.sock
-
-# Client VM
-networks:
-  - type: socket
-    mode: client
-    path: /tmp/qemu-lan.sock
-```
-
-### 3. **TAP/Bridge Networking**
-- **Type**: `tap`
-- **Root required**: Yes (or qemu-bridge-helper)
-- **Use case**: Direct host network access, VM appears on LAN
-
-```yaml
-networks:
-  - type: tap
-    ifname: tap0
-    bridge: br0
-```
-
-**Host setup required:**
-```bash
-sudo ip link add name br0 type bridge
-sudo ip addr add 192.168.100.1/24 dev br0
-sudo ip link set br0 up
-```
-
-### 4. **Multicast Networking**
-- **Type**: `multicast`
-- **Root required**: No
-- **Use case**: Multiple VMs on same network, broadcast support
-
-```yaml
-networks:
-  - type: multicast
-    address: "230.0.0.1:1234"
-```
-
-### 5. **VLAN Networking**
-- **Type**: `vlan`
-- **Root required**: Depends on parent
-- **Use case**: Network segmentation
-
-```yaml
-networks:
-  - type: vlan
-    vlan_id: 100
-    parent: user
-```
-
-## Network Conditions
-
-Simulate real-world network conditions:
-
-```yaml
-networks:
-  - type: socket
-    mode: server
-    path: /tmp/qemu-net.sock
-    conditions:
-      latency: 100ms      # Round-trip delay
-      packet_loss: 5      # Percentage (0-100)
-      bandwidth: 10mbps   # Speed limit
-      jitter: 20ms        # Latency variance
-```
-
-**Note:** For TAP networks, apply conditions on host:
-```bash
-sudo tc qdisc add dev tap0 root netem delay 100ms loss 5%
-```
-
-## MAC Address Management
-
-- **Auto-generated**: Format `52:54:00:XX:XX:XX`
-- **Manual override**: Specify `mac` parameter
-- **Unique per interface**: Automatically incremented
-
-```yaml
-networks:
-  - type: socket
-    mac: "52:54:00:12:34:56"  # Custom MAC
+python3 qemu-compose.py down
 ```
 
 ---
 
-# �🔧 **Troubleshooting**
+# 🔟 **How to Connect Serial Console**
 
-### KVM not detected?
+If RouterOS has:
 
-Enable virtualization in BIOS and run:
+```
+serial:
+  type: unix
+  path: /tmp/qemu-compose/sockets/router.sock
+  server: true
+  nowait: true
+```
 
-```bash
-sudo modprobe kvm
-sudo modprobe kvm_intel   # Intel
-sudo modprobe kvm_amd     # AMD
+Connect:
+
+```
+socat -,raw,echo=0 unix-connect:/tmp/qemu-compose/sockets/router.sock
+```
+
+You get **RouterOS CLI directly**.
+
+---
+
+# 1️⃣1️⃣ **How to Connect Monitor**
+
+```
+socat - UNIX-CONNECT:/tmp/qemu-compose/routerVm.monitor
+```
+
+Commands:
+
+```
+info cpu
+info network
+system_reset
+system_powerdown
+```
+
+---
+
+# 1️⃣2️⃣ **How to Add ANY QEMU Feature**
+
+Everything supported by QEMU CLI can be mapped easily:
+
+### Example: Add TPM
+
+```
+tpm:
+  type: emulator
+  path: /tmp/mytpm.sock
+```
+
+### Example: Add QMP socket
+
+```
+qmp:
+  path: /tmp/qmp-router.sock
+  server: true
+```
+
+### Example: Add SPICE
+
+```
+spice:
+  port: 5930
+  addr: 127.0.0.1
+```
+
+### Example: Add audio
+
+```
+audio:
+  driver: pa
+```
+
+### Example: Add custom args
+
+```
+extra_args:
+  - "-rng-device"
+  - "/dev/urandom"
+  - "-device"
+  - "virtio-rng-pci"
 ```
 
 ---
