@@ -4,10 +4,10 @@ qemu-compose
 Full-feature QEMU compose orchestrator (max-features mode)
 
 Usage:
-  ./qemu-compose up -f qemu-compose-pro.yml
-  ./qemu-compose down -f qemu-compose-pro.yml
-  ./qemu-compose ps -f qemu-compose-pro.yml
-  ./qemu-compose logs <vmname> -f qemu-compose-pro.yml
+  ./qemu-compose up -f qemu-compose.yml
+  ./qemu-compose down -f qemu-compose.yml
+  ./qemu-compose ps -f qemu-compose.yml
+  ./qemu-compose logs <vmname> -f qemu-compose.yml
 
 Notes:
  - The YAML schema is very large (see example at bottom).
@@ -517,7 +517,7 @@ def tail_logs(vm):
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("action", choices=["up","down","ps","logs"])
-    parser.add_argument("-f","--file", default="qemu-compose-pro.yml")
+    parser.add_argument("-f","--file", default="qemu-compose.yml")
     parser.add_argument("vm", nargs="?", help="vm name for logs/stop")
     args = parser.parse_args()
 
