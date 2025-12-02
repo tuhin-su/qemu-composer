@@ -139,6 +139,17 @@ def build_qemu_command(name, conf):
     monitor_path = f"{BASE_DIR}/{name}.monitor"
     cmd += ["-monitor", f"unix:{monitor_path},server=on,wait=off"]
 
+    # SERIAL CONFIG
+    if "serial" in conf:
+        s = conf["serial"]
+        if s["type"] == "unix":
+            serial_str = f"unix:{s['path']}"
+            if s.get("server", False):
+                serial_str += ",server"
+            if s.get("nowait", False):
+                serial_str += ",nowait"
+            cmd += ["-serial", serial_str]
+
     return cmd
 
 
