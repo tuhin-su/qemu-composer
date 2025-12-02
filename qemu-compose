@@ -1,204 +1,545 @@
 #!/usr/bin/env python3
+"""
+qemu-compose
+Full-feature QEMU compose orchestrator (max-features mode)
+
+Usage:
+  ./qemu-compose up -f qemu-compose-pro.yml
+  ./qemu-compose down -f qemu-compose-pro.yml
+  ./qemu-compose ps -f qemu-compose-pro.yml
+  ./qemu-compose logs <vmname> -f qemu-compose-pro.yml
+
+Notes:
+ - The YAML schema is very large (see example at bottom).
+ - Some operations require root (tap interfaces, VFIO).
+ - Raw qemu_args allowed for ultimate power.
+"""
 import os
+import sys
 import subprocess
 import yaml
 import argparse
+import uuid
+import shlex
+from pathlib import Path
 
-BASE_DIR = "/tmp/qemu-compose"
-
+BASE_DIR = "/tmp/qemu-compose-pro"   # change if you want persistent directory
+QEMU_BIN_PREFIX = "qemu-system-"     # qemu binary prefix
 
 def ensure_dirs():
-    os.makedirs(BASE_DIR, exist_ok=True)
-    os.makedirs(f"{BASE_DIR}/logs", exist_ok=True)
-    os.makedirs(f"{BASE_DIR}/sockets", exist_ok=True)
-
+    Path(BASE_DIR).mkdir(parents=True, exist_ok=True)
+    Path(BASE_DIR + "/logs").mkdir(parents=True, exist_ok=True)
+    Path(BASE_DIR + "/sockets").mkdir(parents=True, exist_ok=True)
+    Path(BASE_DIR + "/pids").mkdir(parents=True, exist_ok=True)
+    Path(BASE_DIR + "/work").mkdir(parents=True, exist_ok=True)
 
 def load_yaml(path):
     with open(path, "r") as f:
         return yaml.safe_load(f)
 
-
-def kvm_available():
+def detect_kvm():
     return os.path.exists("/dev/kvm")
 
+def debug(msg):
+    print("[qemu-compose-pro]", msg, file=sys.stderr)
 
-def build_qemu_command(name, conf):
-    arch = conf.get("arch", "x86_64")
-    machine = conf.get("machine", "q35")
-    cpus = conf.get("cpus", 2)
-    cpu_model = conf.get("cpu_model", "max")  # safe default
-    memory = conf.get("memory", 2048)
-    cpu_max_speed = conf.get("cpu_max_speed", 100)  # percentage
-
-    # Detect KVM
-    if arch == "x86_64" and kvm_available():
+# ---------- Helpers to build complex pieces --------------
+def choose_accel_and_cpu(arch, cpu_cfg):
+    want_cpu = cpu_cfg.get("model") if isinstance(cpu_cfg, dict) else None
+    if arch.startswith("x86") and detect_kvm():
         accel = "kvm"
-        cpu_model = "host"
+        cpu_model = want_cpu or "host"
     else:
         accel = "tcg"
+        cpu_model = want_cpu or "qemu64"
+    return accel, cpu_model
 
-    cmd = [
-        f"qemu-system-{arch}",
-        "-accel", accel,
-        "-machine", machine,
-        "-smp", str(cpus),
-        "-m", str(memory),
-        "-cpu", cpu_model,
-    ]
+def build_blockdevs(vm_name, conf):
+    """
+    Build blockdev strings for QEMU blockdev-based backend if requested.
+    The YAML may include a 'blockdev' list for explicit block definitions.
+    Returns list of args (['-blockdev', '...'])
+    """
+    args = []
+    blockdevs = conf.get("blockdev", []) or []
+    for b in blockdevs:
+        # Example blockdev entry:
+        # - node-name: file_image1
+        #   driver: file
+        #   filename: ./disk.qcow2
+        #   cache: none
+        # - node-name: qcow1
+        #   driver: qcow2
+        #   file: file_image1
+        #   readonly: false
+        node = b.get("node-name")
+        if not node:
+            continue
+        # assemble single blockdev JSON-like string
+        # QEMU -blockdev "driver=qcow2,file=driver=file,filename=...,cache.direct=on"
+        # We'll create simple comma-separated key=val pairs
+        parts = []
+        for k, v in b.items():
+            if k == "node-name":
+                continue
+            if isinstance(v, bool):
+                v = "on" if v else "off"
+            # if value contains comma or spaces, quote it
+            val = str(v)
+            if "," in val or " " in val:
+                val = f"\"{val}\""
+            parts.append(f"{k}={val}")
+        spec = f"node-name={node}," + ",".join(parts)
+        args += ["-blockdev", spec]
+    return args
 
-    # ------------------------
-    # Display
-    # ------------------------
-    display_conf = conf.get("display", {})
-    display_type = display_conf.get("type", "gtk")
-    if display_type == "none":
-        cmd += ["-nographic"]
-        # Use serial console
-        cmd += ["-serial", f"mon:stdio"]
+def build_drives(vm_name, conf):
+    """
+    Traditional -drive handling for backwards compatibility.
+    Accepts conf['disks'] as list:
+      - path: ./disk.qcow2
+        id: vda
+        format: qcow2
+        interface: virtio
+        cache: none
+        snapshot: false
+        aio: native
+    """
+    args = []
+    for d in conf.get("disks", []) or []:
+        path = d.get("path")
+        if not path:
+            continue
+        fmt = d.get("format", "qcow2")
+        iface = d.get("interface", "virtio")
+        options = [f"file={path}", f"format={fmt}", f"if={iface}"]
+        # optional
+        if d.get("id"):
+            options.append(f"id={d['id']}")
+        if d.get("cache"):
+            options.append(f"cache={d['cache']}")
+        if d.get("snapshot"):
+            options.append(f"snapshot={'on' if d.get('snapshot') else 'off'}")
+        if d.get("aio"):
+            options.append(f"aio={d['aio']}")
+        args += ["-drive", ",".join(options)]
+    return args
+
+def build_usb_args(conf):
+    """USB device passthrough and usb-redir helpers"""
+    args = []
+    for usb in conf.get("usb", []) or []:
+        # usb example:
+        # - host: "bus,dev" or vendor_id/product_id or id: "usb1"
+        # - passthrough: true
+        # - device_type: host or redir
+        typ = usb.get("type", "host")
+        if typ == "host" and usb.get("host"):
+            host = usb["host"]
+            # host may be string "vendor:prod" or "bus,dev"
+            args += ["-device", f"usb-host,host={host}"]
+        elif typ == "redir" and usb.get("id"):
+            # use QEMU USBredir backend
+            args += ["-device", f"usb-redir,id={usb.get('id')}"]
+    return args
+
+def build_pci_args(conf):
+    """PCI devices and VFIO passthrough"""
+    args = []
+    for pci in conf.get("pci", []) or []:
+        # expect fields: host (pci id), multifunction, x-vga, romfile, id
+        host = pci.get("host")
+        if not host:
+            continue
+        opts = [f"host={host}"]
+        if pci.get("multifunction"):
+            opts.append("multifunction=on")
+        if pci.get("x-vga"):
+            opts.append("x-vga=on")
+        if pci.get("id"):
+            opts.append(f"id={pci['id']}")
+        args += ["-device", f"vfio-pci,{','.join(opts)}"]
+    return args
+
+def build_tpm(conf):
+    """TPM: support swtpm socket or device model"""
+    args = []
+    tpm = conf.get("tpm")
+    if not tpm:
+        return args
+    # sample yaml:
+    # tpm:
+    #   type: swtpm
+    #   state-dir: /tmp/tpm-state/vm1
+    #   chardev: /tmp/qemu-compose/sockets/vm1-tpm.sock
+    tt = tpm.get("type", "swtpm")
+    if tt == "swtpm":
+        state_dir = tpm.get("state-dir", f"{BASE_DIR}/tpm/{uuid.uuid4().hex}")
+        Path(state_dir).mkdir(parents=True, exist_ok=True)
+        sock = tpm.get("socket", f"{BASE_DIR}/sockets/{uuid.uuid4().hex}.tpm")
+        # This requires swtpm setup externally. We'll add chardev and device
+        args += ["-chardev", f"socket,id=tpmchardev,path={sock},server=on,wait=off"]
+        args += ["-tpmdev", f"emulator,id=tpm0,chardev=tpmchardev"]
+        args += ["-device", "tpm-crb,tpmdev=tpm0"]
     else:
-        width = display_conf.get("width", 800)
-        height = display_conf.get("height", 600)
-        fullscreen = display_conf.get("fullscreen", False)
-        cmd += ["-display", display_type]
-        if display_type in ["sdl", "gtk"]:
-            cmd += ["-vga", "virtio"]
-        if fullscreen:
-            cmd += ["-full-screen"]
+        # passthrough real TPM (rare)
+        if tpm.get("device"):
+            args += ["-device", tpm["device"]]
+    return args
 
-    # ------------------------
-    # CPU SPEED LIMITING
-    # ------------------------
-    if cpu_max_speed < 100:
-        shift = max(0, int(7 - (cpu_max_speed / 100.0) * 7))
+def build_memory_backend(conf):
+    args = []
+    mem = conf.get("memory_backend")
+    if not mem:
+        return args
+    # example:
+    # memory_backend:
+    #   id: hostmem0
+    #   size: 4G
+    #   hugepages: true
+    mb_id = mem.get("id", f"mem_{uuid.uuid4().hex[:8]}")
+    size = mem.get("size", "1G")
+    if mem.get("hugepages"):
+        args += ["-object", f"memory-backend-file,id={mb_id},size={size},mem-path=/dev/hugepages,share=on"]
+    else:
+        args += ["-object", f"memory-backend-ram,id={mb_id},size={size}"]
+    # later attach with -numa or -m if needed; script user must use extra args to attach
+    return args
+
+def build_numa_cpu_args(conf):
+    """
+    Support `cpu_topology` like:
+    cpu_topology:
+      sockets: 1
+      cores: 2
+      threads: 1
+      numa:
+        - id: 0
+          cpus: "0-1"
+          mem: 2G
+    """
+    args = []
+    topo = conf.get("cpu_topology")
+    if not topo:
+        return args
+    sockets = topo.get("sockets")
+    cores = topo.get("cores")
+    threads = topo.get("threads")
+    if sockets and cores and threads:
+        args += ["-smp", f"{sockets*cores*threads},sockets={sockets},cores={cores},threads={threads}"]
+    # NUMA nodes
+    for n in topo.get("numa", []) or []:
+        nid = n.get("id")
+        mem = n.get("mem")
+        cpus = n.get("cpus")
+        if nid is not None and mem and cpus:
+            args += ["-numa", f"node-id={nid},cpus={cpus},mem={mem}"]
+    return args
+
+def build_qmp(conf, name):
+    args = []
+    qmp = conf.get("qmp")
+    if not qmp:
+        return args
+    path = qmp.get("path", f"{BASE_DIR}/{name}.qmp")
+    # allow tcp or unix
+    if qmp.get("type") == "tcp":
+        port = qmp.get("port", 4444)
+        args += ["-qmp", f"tcp:127.0.0.1:{port},server,nowait"]
+    else:
+        args += ["-qmp", f"unix:{path},server,nowait"]
+    return args
+
+def build_main_command(vm_name, conf):
+    """
+    Master builder that aggregates all sections and returns list of args for subprocess.
+    """
+    arch = conf.get("arch", "x86_64")
+    qemu_bin = QEMU_BIN_PREFIX + arch
+    cmd = [qemu_bin]
+
+    machine = conf.get("machine", "q35")
+    cmd += ["-machine", machine]
+
+    # CPU / accel
+    accel, cpu_model = choose_accel_and_cpu(arch, conf.get("cpu", {}))
+    if accel:
+        cmd += ["-accel", accel]
+    if cpu_model:
+        cmd += ["-cpu", cpu_model]
+
+    # CPU topology / NUMA
+    cmd += build_numa_cpu_args(conf)
+
+    # Memory
+    if conf.get("memory"):
+        cmd += ["-m", str(conf["memory"])]
+
+    # memory backend
+    cmd += build_memory_backend(conf)
+
+    # blockdevs (advanced)
+    cmd += build_blockdevs(vm_name, conf)
+
+    # drives (legacy)
+    cmd += build_drives(vm_name, conf)
+
+    # disk snapshot mode
+    if conf.get("snapshot"):
+        # global snapshot flag not present; handled per-drive with snapshot=on
+        pass
+
+    # Display / Graphics
+    disp = conf.get("display", {}) or {}
+    dtype = disp.get("type", "gtk")
+    if dtype == "none":
+        # use -nographic to avoid any graphics devices and make serial only
+        cmd += ["-nographic"]
+    else:
+        # for VNC or spice, prefer explicit switches
+        if dtype == "vnc":
+            port = disp.get("vnc_port", 5900)
+            display_num = int(port) - 5900
+            cmd += ["-vnc", f"127.0.0.1:{display_num}"]
+        else:
+            cmd += ["-display", dtype]
+            # extra display devices
+            if disp.get("vga"):
+                cmd += ["-vga", disp["vga"]]
+            if disp.get("width") and disp.get("height"):
+                # QEMU supports -g or -device options; keep it simple: pass to args
+                cmd += ["-g", f"{disp['width']}x{disp['height']}"]
+
+    # CPU throttling via icount
+    cms = conf.get("cpu_max_speed")
+    if cms and int(cms) < 100:
+        shift = max(0, int(7 - (int(cms)/100.0)*7))
         cmd += ["-icount", f"shift={shift},sleep=on"]
-        print(f"CPU throttled to {cpu_max_speed}% (icount shift={shift})")
 
-    # ------------------------
-    # NETWORKS
-    # ------------------------
-    net_id = 0
-    if "networks" in conf:
-        for net in conf["networks"]:
-            net_id += 1
-            net_type = net.get("type", "user")
-            mac = net.get("mac", f"52:54:00:{net_id:02x}:{net_id:02x}:{net_id:02x}")
-
-            if net_type == "user":
-                forwards = net.get("forwards", [])
-                fwd_str = ",".join(
-                    [f"hostfwd=tcp::{f['host_port']}-:{f['guest_port']}" for f in forwards]
-                )
-                netdev = f"user,id=net{net_id}"
-                if fwd_str:
-                    netdev += f",{fwd_str}"
-                cmd += ["-netdev", netdev, "-device", f"e1000,netdev=net{net_id},mac={mac}"]
-
-            elif net_type == "tap":
-                ifname = net.get("tap", f"tap{net_id}")
-                script = net.get("script", "no")
-                downscript = net.get("downscript", "no")
-                netdev = f"tap,id=net{net_id},ifname={ifname},script={script},downscript={downscript}"
-                cmd += ["-netdev", netdev, "-device", f"e1000,netdev=net{net_id},mac={mac}"]
-
-            elif net_type == "socket":
-                mode = net.get("mode", "server")
-                path = net.get("path", f"{BASE_DIR}/sockets/{name}_net{net_id}.sock")
-                if mode == "server":
-                    netdev = f"socket,id=net{net_id},listen={path}"
+    # networks (complex)
+    netcfgs = conf.get("networks", []) or []
+    for idx, net in enumerate(netcfgs, start=1):
+        t = net.get("type", "user")
+        mac = net.get("mac")
+        model = net.get("model")
+        dev_id = f"net{idx}"
+        if t == "user":
+            forwards = net.get("forwards", []) or []
+            fw = []
+            for fwd in forwards:
+                hp = fwd.get("host_port")
+                gp = fwd.get("guest_port")
+                proto = fwd.get("proto", "tcp")
+                if hp and gp:
+                    fw.append(f"hostfwd={proto}::{hp}-:{gp}")
+            fwd_str = ",".join(fw)
+            netdev = f"user,id={dev_id}"
+            if fwd_str:
+                netdev += f",{fwd_str}"
+            cmd += ["-netdev", netdev]
+            dev = (model or nic_model_default(conf)) + f",netdev={dev_id}"
+            if mac:
+                dev += f",mac={mac}"
+            cmd += ["-device", dev]
+        elif t == "tap":
+            ifname = net.get("tap") or net.get("ifname") or f"tap{idx}"
+            script = net.get("script", "no")
+            downscript = net.get("downscript", "no")
+            br = net.get("bridge")
+            netdev = f"tap,id={dev_id},ifname={ifname},script={script},downscript={downscript}"
+            if br:
+                netdev += f",br={br}"
+            cmd += ["-netdev", netdev]
+            dev = (model or nic_model_default(conf)) + f",netdev={dev_id}"
+            if mac:
+                dev += f",mac={mac}"
+            cmd += ["-device", dev]
+        elif t == "socket":
+            # support host:port address or unix socket path
+            mode = net.get("mode", "server")
+            address = net.get("address")
+            path = net.get("path")
+            if address:
+                if mode in ("server","listen"):
+                    netdev = f"socket,id={dev_id},listen={address}"
                 else:
-                    netdev = f"socket,id=net{net_id},connect={path}"
-                cmd += ["-netdev", netdev, "-device", f"e1000,netdev=net{net_id},mac={mac}"]
+                    netdev = f"socket,id={dev_id},connect={address}"
+            else:
+                path = path or f"{BASE_DIR}/sockets/{vm_name}_net{idx}.sock"
+                if mode in ("server","listen"):
+                    netdev = f"socket,id={dev_id},listen={path}"
+                else:
+                    netdev = f"socket,id={dev_id},connect={path}"
+            cmd += ["-netdev", netdev]
+            dev = (model or nic_model_default(conf)) + f",netdev={dev_id}"
+            if mac:
+                dev += f",mac={mac}"
+            cmd += ["-device", dev]
+        elif t == "vlan":
+            parent = net.get("parent", "user")
+            vlan_id = net.get("vlan_id", 1)
+            netdev = f"{parent},id={dev_id},vlan={vlan_id}"
+            cmd += ["-netdev", netdev]
+            dev = (model or nic_model_default(conf)) + f",netdev={dev_id}"
+            if mac:
+                dev += f",mac={mac}"
+            cmd += ["-device", dev]
+        elif t == "multicast":
+            addr = net.get("address", "230.0.0.1:1234")
+            netdev = f"socket,id={dev_id},mcast={addr}"
+            cmd += ["-netdev", netdev]
+            dev = (model or nic_model_default(conf)) + f",netdev={dev_id}"
+            if mac:
+                dev += f",mac={mac}"
+            cmd += ["-device", dev]
+        else:
+            # fallback user net
+            netdev = f"user,id={dev_id}"
+            cmd += ["-netdev", netdev]
+            dev = (model or nic_model_default(conf)) + f",netdev={dev_id}"
+            if mac:
+                dev += f",mac={mac}"
+            cmd += ["-device", dev]
 
-            elif net_type == "vlan":
-                vlan_id = net.get("vlan_id", 1)
-                parent = net.get("parent", "user")
-                netdev = f"{parent},id=net{net_id},vlan={vlan_id}"
-                cmd += ["-netdev", netdev, "-device", f"e1000,netdev=net{net_id},mac={mac}"]
+    # usb devices
+    cmd += build_usb_args(conf)
 
-    # ------------------------
-    # DISKS
-    # ------------------------
-    if "disks" in conf:
-        for d in conf["disks"]:
-            path = d["path"]
-            fmt = d.get("format", "qcow2")
-            iface = d.get("interface", "virtio")
-            cmd += ["-drive", f"file={path},format={fmt},if={iface}"]
+    # PCI/VFIO
+    cmd += build_pci_args(conf)
 
-    # ------------------------
-    # CDROM / ISO
-    # ------------------------
-    if "cdrom" in conf:
-        iso_path = conf["cdrom"]["path"]
-        interface = conf["cdrom"].get("interface", "ide")
-        cmd += ["-drive", f"file={iso_path},media=cdrom,if={interface}"]
+    # TPM
+    cmd += build_tpm(conf)
 
-    # ------------------------
-    # MONITOR SOCKET
-    # ------------------------
-    monitor_path = f"{BASE_DIR}/{name}.monitor"
+    # memory backend already added earlier
+
+    # QMP
+    cmd += build_qmp(conf, vm_name)
+
+    # serials + virtio-serial chardevs: for socket unix/tcp
+    serials = conf.get("serials", []) or []
+    # support both single serial: {...} and serials: [ ... ]
+    if conf.get("serial"):
+        serials.insert(0, conf["serial"])
+    for si, s in enumerate(serials, start=1):
+        stype = s.get("type", "unix")
+        if stype == "unix":
+            path = s.get("path", f"{BASE_DIR}/sockets/{vm_name}.serial{si}.sock")
+            server = s.get("server", True)
+            nowait = s.get("nowait", True)
+            ch_id = f"char_{vm_name}_{si}"
+            server_opt = "server=on" if server else "server=off"
+            wait_opt = "wait=off" if not nowait else "wait=on"
+            cmd += ["-chardev", f"socket,id={ch_id},path={path},{server_opt},{wait_opt}"]
+            cmd += ["-device", "virtio-serial"]
+            vname = f"org.qemu.serial-{uuid.uuid4().hex[:8]}"
+            cmd += ["-device", f"virtserialport,chardev={ch_id},name={vname}"]
+        elif stype == "tcp":
+            port = s.get("port", 5555)
+            ch_id = f"char_{vm_name}_{si}"
+            server_opt = "server=on" if s.get("server", True) else "server=off"
+            wait_opt = "wait=off" if not s.get("nowait", True) else "wait=on"
+            cmd += ["-chardev", f"socket,id={ch_id},host=127.0.0.1,port={port},{server_opt},{wait_opt}"]
+            cmd += ["-device", "virtio-serial"]
+            vname = f"org.qemu.serial-{uuid.uuid4().hex[:8]}"
+            cmd += ["-device", f"virtserialport,chardev={ch_id},name={vname}"]
+        elif stype == "file":
+            path = s.get("path", f"{BASE_DIR}/logs/{vm_name}.serial.log")
+            cmd += ["-serial", f"file:{path}"]
+
+    # monitor socket
+    monitor_path = f"{BASE_DIR}/{vm_name}.monitor"
     cmd += ["-monitor", f"unix:{monitor_path},server=on,wait=off"]
 
-    # SERIAL CONFIG
-    if "serial" in conf:
-        s = conf["serial"]
-        if s["type"] == "unix":
-            serial_str = f"unix:{s['path']}"
-            if s.get("server", False):
-                serial_str += ",server"
-            if s.get("nowait", False):
-                serial_str += ",nowait"
-            cmd += ["-serial", serial_str]
-
+    # extra args - allow raw qemu args for extreme edge cases
+    extra = conf.get("qemu_args", []) or []
+    if isinstance(extra, list):
+        for e in extra:
+            if isinstance(e, str):
+                cmd += shlex.split(e)
     return cmd
 
+# helper default nic choice for inline network building
+def nic_model_default(conf):
+    return "virtio-net-pci" if conf.get("guest_os","").lower() not in ("router","chr","routeros","mikrotik") else "e1000"
 
+# ---------------- process lifecycle ----------------
 def start_vm(name, conf):
     ensure_dirs()
-    cmd = build_qemu_command(name, conf)
+    cmd = build_main_command(name, conf)
     log_file = f"{BASE_DIR}/logs/{name}.log"
-
+    pid_path = f"{BASE_DIR}/pids/{name}.pid"
     print(f"Starting {name} ...")
     print(" ".join(cmd))
+    lf = open(log_file, "w")
+    p = subprocess.Popen(cmd, stdout=lf, stderr=lf)
+    with open(pid_path, "w") as pf:
+        pf.write(str(p.pid))
+    print(f"{name} started (pid={p.pid}) logs -> {log_file}")
 
-    with open(log_file, "w") as lf:
-        process = subprocess.Popen(cmd, stdout=lf, stderr=lf)
-
-    print(f"{name} started (pid={process.pid}) logs -> {log_file}")
-
-
-def stop_vm(name):
+def stop_vm(name, conf=None):
     monitor_path = f"{BASE_DIR}/{name}.monitor"
-    if not os.path.exists(monitor_path):
-        print("VM not running or monitor socket missing.")
-        return
+    pid_path = f"{BASE_DIR}/pids/{name}.pid"
+    # first try soft shutdown via monitor
+    if os.path.exists(monitor_path):
+        try:
+            subprocess.run(["socat", "-", f"unix-connect:{monitor_path}"], input="system_powerdown\n", text=True, check=False)
+            print(f"Sent system_powerdown to {name} (monitor).")
+            return
+        except FileNotFoundError:
+            print("socat not installed — cannot use monitor to request shutdown.")
+    # fallback kill
+    if os.path.exists(pid_path):
+        with open(pid_path) as pf:
+            pid = int(pf.read().strip())
+            try:
+                os.kill(pid, 15)
+                print(f"Sent SIGTERM to pid {pid} for {name}")
+            except Exception as e:
+                print("Failed to kill pid:", e)
+        os.remove(pid_path)
 
-    try:
-        subprocess.run(
-            ["socat", "-", f"unix-connect:{monitor_path}"],
-            input="system_powerdown\n",
-            text=True
-        )
-        print(f"{name} stopped.")
-    except FileNotFoundError:
-        print("Install socat: sudo apt install socat")
+def ps(vms):
+    for name in vms.keys():
+        pid_path = f"{BASE_DIR}/pids/{name}.pid"
+        pid = None
+        if os.path.exists(pid_path):
+            with open(pid_path) as pf:
+                pid = pf.read().strip()
+        print(f"{name}: pid={pid}")
 
+def tail_logs(vm):
+    lf = f"{BASE_DIR}/logs/{vm}.log"
+    if not os.path.exists(lf):
+        print("No log:", lf); return
+    subprocess.run(["tail", "-n", "200", lf])
 
+# --------------------- CLI --------------------------
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("action", choices=["up", "down"])
-    parser.add_argument("-f", "--file", default="qemu-compose.yml")
+    parser.add_argument("action", choices=["up","down","ps","logs"])
+    parser.add_argument("-f","--file", default="qemu-compose-pro.yml")
+    parser.add_argument("vm", nargs="?", help="vm name for logs/stop")
     args = parser.parse_args()
 
-    data = load_yaml(args.file)
-    vms = data.get("vms", {})
+    cfg = load_yaml(args.file)
+    vms = cfg.get("vms", {}) or {}
 
-    for name, conf in vms.items():
-        if args.action == "up":
+    if args.action == "up":
+        for name, conf in vms.items():
             start_vm(name, conf)
-        elif args.action == "down":
-            stop_vm(name)
-
+    elif args.action == "down":
+        if args.vm:
+            stop_vm(args.vm, vms.get(args.vm))
+        else:
+            for name in list(vms.keys()):
+                stop_vm(name, vms.get(name))
+    elif args.action == "ps":
+        ps(vms)
+    elif args.action == "logs":
+        if not args.vm:
+            print("Specify VM name for logs.")
+        else:
+            tail_logs(args.vm)
 
 if __name__ == "__main__":
     main()
